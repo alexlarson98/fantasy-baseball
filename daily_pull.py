@@ -1,13 +1,19 @@
 """
-Daily data pull from Yahoo Fantasy Baseball API.
+Daily data pull from Yahoo Fantasy, FanGraphs, FantasyPros, and MLB Stats API.
 
-Fetches roster, free agents, season stats, and league settings,
-then saves everything to data/{date}/ as CSV files.
+Saves everything to data/{date}/ organized by source:
+  yahoo/              - Roster, free agents, season stats, league settings
+  projections_ros/    - FanGraphs Depth Charts ROS projections
+  projections_daily/  - FantasyPros daily projections (per-game stats)
+  mlb/                - Today's games, lineups, probable pitchers
 """
 import os
 from datetime import date
 from dotenv import load_dotenv
 from src.yahoo_client import YahooClient
+from src.fangraphs_scraper import scrape_fangraphs_projections
+from src.fantasypros_scraper import scrape_daily_projections
+from src.mlb_client import fetch_daily_mlb_data
 import pandas as pd
 import json
 
@@ -22,7 +28,12 @@ def pull_daily_data():
 
     today = date.today().isoformat()
     data_dir = os.path.join('data', today)
-    os.makedirs(data_dir, exist_ok=True)
+    yahoo_dir = os.path.join(data_dir, 'yahoo')
+    proj_ros_dir = os.path.join(data_dir, 'projections_ros')
+    proj_daily_dir = os.path.join(data_dir, 'projections_daily')
+    mlb_dir = os.path.join(data_dir, 'mlb')
+    for d in [yahoo_dir, proj_ros_dir, proj_daily_dir, mlb_dir]:
+        os.makedirs(d, exist_ok=True)
 
     print(f"=== Daily Pull for {today} ===")
     print(f"League: {league_id}")
@@ -31,55 +42,74 @@ def pull_daily_data():
     client = YahooClient()
 
     # 1. League settings
-    print("Fetching league settings...")
+    print("[1/8] Fetching league settings...")
     settings = client.get_league_settings(league_id)
-    with open(os.path.join(data_dir, 'league_settings.json'), 'w') as f:
+    with open(os.path.join(yahoo_dir, 'league_settings.json'), 'w') as f:
         json.dump(settings, f, indent=2)
     print(f"  League: {settings['name']} ({settings['num_teams']} teams)")
     print(f"  Scoring categories: {len(settings['categories'])}")
     print(f"  Roster positions: {[p['position'] + 'x' + p['count'] for p in settings['roster_positions']]}")
 
     # 2. Roster
-    print("\nFetching your roster...")
+    print("\n[2/8] Fetching your roster...")
     roster = client.get_roster(league_id)
     print(f"  Found {len(roster)} players on roster")
     for p in roster:
         slot = p.get('selected_position', '?')
         print(f"    [{slot}] {p['name']} ({p['position']}) - {p['team']}")
-    pd.DataFrame(roster).to_csv(os.path.join(data_dir, 'roster.csv'), index=False)
+    pd.DataFrame(roster).to_csv(os.path.join(yahoo_dir, 'roster.csv'), index=False)
 
     # 3. Free agents (top 500)
-    print("\nFetching free agents (top 500)...")
+    print("\n[3/8] Fetching free agents (top 500)...")
     free_agents = client.get_free_agents(league_id, count=500)
     print(f"  Found {len(free_agents)} free agents")
-    pd.DataFrame(free_agents).to_csv(os.path.join(data_dir, 'free_agents.csv'), index=False)
+    pd.DataFrame(free_agents).to_csv(os.path.join(yahoo_dir, 'free_agents.csv'), index=False)
 
     # 4. Season stats for roster
-    print("\nFetching season stats for roster players...")
+    print("\n[4/8] Fetching season stats for roster players...")
     roster_keys = [p['player_key'] for p in roster]
     roster_stats = client.get_player_stats(league_id, roster_keys, stat_type='season')
-    roster_stats.to_csv(os.path.join(data_dir, 'roster_stats.csv'), index=False)
+    roster_stats.to_csv(os.path.join(yahoo_dir, 'roster_stats.csv'), index=False)
     print(f"  Got stats for {len(roster_stats)} roster players")
 
     # 5. Season stats for free agents
-    print("\nFetching season stats for free agents...")
+    print("\n[5/8] Fetching season stats for free agents...")
     fa_keys = [p['player_key'] for p in free_agents]
     fa_stats = client.get_player_stats(league_id, fa_keys, stat_type='season')
-    fa_stats.to_csv(os.path.join(data_dir, 'fa_stats.csv'), index=False)
+    fa_stats.to_csv(os.path.join(yahoo_dir, 'fa_stats.csv'), index=False)
     print(f"  Got stats for {len(fa_stats)} free agents")
 
-    # 6. Last week stats for roster (useful for hot/cold streaks)
-    print("\nFetching last week stats for roster players...")
-    roster_lastweek = client.get_player_stats(league_id, roster_keys, stat_type='lastweek')
-    roster_lastweek.to_csv(os.path.join(data_dir, 'roster_lastweek.csv'), index=False)
-    print(f"  Got last week stats for {len(roster_lastweek)} roster players")
+    # 6. FanGraphs ROS projections (Depth Charts)
+    print("\n[6/8] Fetching FanGraphs ROS projections...")
+    hitter_proj, pitcher_proj = scrape_fangraphs_projections()
+    hitter_proj.to_csv(os.path.join(proj_ros_dir, 'hitters.csv'), index=False)
+    pitcher_proj.to_csv(os.path.join(proj_ros_dir, 'pitchers.csv'), index=False)
+
+    # 7. FantasyPros daily projections
+    print("\n[7/8] Fetching FantasyPros daily projections...")
+    daily_hitters, daily_pitchers = scrape_daily_projections()
+    daily_hitters.to_csv(os.path.join(proj_daily_dir, 'hitters.csv'), index=False)
+    daily_pitchers.to_csv(os.path.join(proj_daily_dir, 'pitchers.csv'), index=False)
+
+    # 8. MLB daily games + lineups
+    print("\n[8/8] Fetching today's MLB games and lineups...")
+    games_df, lineups_df = fetch_daily_mlb_data(today)
+    games_df.to_csv(os.path.join(mlb_dir, 'games.csv'), index=False)
+    lineups_df.to_csv(os.path.join(mlb_dir, 'lineups.csv'), index=False)
 
     # Summary
-    print(f"\nDone! All data saved to {data_dir}/")
-    print("Files:")
-    for f in sorted(os.listdir(data_dir)):
-        size = os.path.getsize(os.path.join(data_dir, f))
-        print(f"  {f} ({size:,} bytes)")
+    print(f"\n{'='*50}")
+    print(f"Done! All data saved to {data_dir}/")
+    print(f"{'='*50}")
+    for root, dirs, files in os.walk(data_dir):
+        level = root.replace(data_dir, '').count(os.sep)
+        indent = '  ' * level
+        folder = os.path.basename(root)
+        if level > 0:
+            print(f"{indent}{folder}/")
+        for f in sorted(files):
+            size = os.path.getsize(os.path.join(root, f))
+            print(f"{indent}  {f} ({size:,} bytes)")
 
 
 if __name__ == "__main__":

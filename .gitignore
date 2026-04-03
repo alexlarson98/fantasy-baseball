@@ -1,5 +1,6 @@
 .env
 oauth_token.json
+secrets.json
 venv/
 __pycache__/
 *.pyc
