@@ -39,6 +39,12 @@ class YahooClient:
         if sel_pos is not None:
             info['selected_position'] = sel_pos.findtext('y:position', '', NS)
 
+        # Get percent owned if available
+        pct = player_elem.find('.//y:percent_owned', NS)
+        if pct is not None:
+            info['percent_owned'] = int(pct.findtext('y:value', '0', NS) or 0)
+            info['percent_owned_delta'] = int(pct.findtext('y:delta', '0', NS) or 0)
+
         return info
 
     def _parse_player_stats(self, player_elem, stat_map):
@@ -78,13 +84,13 @@ class YahooClient:
         return players
 
     def get_free_agents(self, league_id, count=100):
-        """Fetch top available free agents sorted by add rank."""
+        """Fetch top available free agents sorted by add rank, with ownership %."""
         players = []
         start = 0
         while start < count:
             batch = min(25, count - start)
             root = self._get(
-                f"{BASE_URL}/league/{league_id}/players;status=FA;sort=AR;start={start};count={batch}"
+                f"{BASE_URL}/league/{league_id}/players;status=FA;sort=AR;start={start};count={batch}/percent_owned"
             )
             batch_players = root.findall('.//y:player', NS)
             if not batch_players:

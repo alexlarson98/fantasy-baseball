@@ -34,14 +34,6 @@ def _match_projection(player_name, proj_df):
     match = proj_df[proj_df['_norm'] == norm_name]
     if not match.empty:
         return match.iloc[0]
-
-    # Try last name match as fallback
-    last = norm_name.split()[-1] if norm_name else ''
-    if last:
-        candidates = proj_df[proj_df['_norm'].str.endswith(last)]
-        if len(candidates) == 1:
-            return candidates.iloc[0]
-
     return None
 
 
@@ -97,8 +89,8 @@ def generate_recommendations(data_dir=None):
 
     # Load data
     roster = pd.read_csv(os.path.join(data_dir, 'yahoo', 'roster.csv'))
-    daily_hitters = pd.read_csv(os.path.join(data_dir, 'projections_daily', 'hitters.csv'))
-    daily_pitchers = pd.read_csv(os.path.join(data_dir, 'projections_daily', 'pitchers.csv'))
+    daily_hitters = pd.read_csv(os.path.join(data_dir, 'projections_fpros', 'hitters.csv'))
+    daily_pitchers = pd.read_csv(os.path.join(data_dir, 'projections_fpros', 'pitchers.csv'))
     games = pd.read_csv(os.path.join(data_dir, 'mlb', 'games.csv'))
 
     with open(os.path.join(data_dir, 'yahoo', 'league_settings.json')) as f:
@@ -189,10 +181,10 @@ def generate_recommendations(data_dir=None):
     for i, idx in enumerate(active.index):
         if i < active_hitter_slots:
             hitter_df.loc[idx, 'action'] = 'START'
-            hitter_df.loc[idx, 'reason'] = f'Ranked #{int(hitter_df.loc[idx, "daily_rank"])} today'
+            hitter_df.loc[idx, 'reason'] = f'# {int(hitter_df.loc[idx, "daily_rank"])} today'
         else:
             hitter_df.loc[idx, 'action'] = 'SIT'
-            hitter_df.loc[idx, 'reason'] = f'Ranked #{int(hitter_df.loc[idx, "daily_rank"])} (better options available)'
+            hitter_df.loc[idx, 'reason'] = f'# {int(hitter_df.loc[idx, "daily_rank"])} (better options available)'
 
     hitter_df = hitter_df.sort_values(
         ['action', 'daily_rank'],
@@ -263,10 +255,10 @@ def generate_recommendations(data_dir=None):
     for i, idx in enumerate(active_p.index):
         if i < pitcher_slots_count:
             pitcher_df.loc[idx, 'action'] = 'START'
-            pitcher_df.loc[idx, 'reason'] = f'Ranked #{int(pitcher_df.loc[idx, "daily_rank"])} today'
+            pitcher_df.loc[idx, 'reason'] = f'# {int(pitcher_df.loc[idx, "daily_rank"])} today'
         else:
             pitcher_df.loc[idx, 'action'] = 'SIT'
-            pitcher_df.loc[idx, 'reason'] = f'Ranked #{int(pitcher_df.loc[idx, "daily_rank"])} (better options available)'
+            pitcher_df.loc[idx, 'reason'] = f'# {int(pitcher_df.loc[idx, "daily_rank"])} (better options available)'
 
     pitcher_df = pitcher_df.sort_values(
         ['action', 'daily_rank'],
@@ -297,12 +289,12 @@ def print_recommendations(recs):
     for _, p in starters.iterrows():
         rank = int(p['daily_rank']) if p['daily_rank'] < 9999 else '?'
         proj = f"R:{p['proj_R']:.2f} HR:{p['proj_HR']:.2f} RBI:{p['proj_RBI']:.2f} SB:{p['proj_SB']:.2f} TB:{p['proj_TB']:.2f} OBP:{p['proj_OBP']:.3f}"
-        print(f"    #{rank:<4} {p['name']:<25} {p['team']:<5} {p['opp']:<8} [{p['current_slot']:<4}] {proj}")
+        print(f"    # {rank:<4} {p['name']:<25} {p['team']:<5} {p['opp']:<8} [{p['current_slot']:<4}] {proj}")
 
     print(f"\n  SIT ({len(sitters)}):")
     for _, p in sitters.iterrows():
         rank = int(p['daily_rank']) if p['daily_rank'] < 9999 else '-'
-        print(f"    #{str(rank):<4} {p['name']:<25} {p['team']:<5} [{p['current_slot']:<4}] {p['reason']}")
+        print(f"    # {str(rank):<4} {p['name']:<25} {p['team']:<5} [{p['current_slot']:<4}] {p['reason']}")
 
     # Pitchers
     print(f"\n  PITCHERS")
@@ -315,12 +307,12 @@ def print_recommendations(recs):
     for _, p in p_starters.iterrows():
         rank = int(p['daily_rank']) if p['daily_rank'] < 9999 else '?'
         proj = f"IP:{p['proj_IP']:.1f} K:{p['proj_K']:.1f} W:{p['proj_W']:.2f} ERA:{p['proj_ERA']:.2f} WHIP:{p['proj_WHIP']:.2f}"
-        print(f"    #{rank:<4} {p['name']:<25} {p['team']:<5} {p['opp']:<8} [{p['current_slot']:<4}] {proj}")
+        print(f"    # {rank:<4} {p['name']:<25} {p['team']:<5} {p['opp']:<8} [{p['current_slot']:<4}] {proj}")
 
     print(f"\n  SIT ({len(p_sitters)}):")
     for _, p in p_sitters.iterrows():
         rank = int(p['daily_rank']) if p['daily_rank'] < 9999 else '-'
-        print(f"    #{str(rank):<4} {p['name']:<25} {p['team']:<5} [{p['current_slot']:<4}] {p['reason']}")
+        print(f"    # {str(rank):<4} {p['name']:<25} {p['team']:<5} [{p['current_slot']:<4}] {p['reason']}")
 
     print("\n" + "=" * 70)
 

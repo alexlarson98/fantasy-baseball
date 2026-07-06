@@ -1,17 +1,17 @@
 """
-Daily data pull from Yahoo Fantasy, FanGraphs, FantasyPros, and MLB Stats API.
+Daily data pull from Yahoo Fantasy, FanDuel, FantasyPros, and MLB Stats API.
 
 Saves everything to data/{date}/ organized by source:
-  yahoo/              - Roster, free agents, season stats, league settings
-  projections_ros/    - FanGraphs Depth Charts ROS projections
-  projections_daily/  - FantasyPros daily projections (per-game stats)
-  mlb/                - Today's games, lineups, probable pitchers
+  yahoo/               - Roster, free agents, season stats, league settings
+  projections_fanduel/ - FanDuel DFS daily projections (per-game stats + fantasy points)
+  projections_fpros/   - FantasyPros daily projections (per-game stats)
+  mlb/                 - Today's games, lineups, probable pitchers
 """
 import os
 from datetime import date
 from dotenv import load_dotenv
 from src.yahoo_client import YahooClient
-from src.fangraphs_scraper import scrape_fangraphs_projections
+from src.fanduel_scraper import scrape_fanduel_daily
 from src.fantasypros_scraper import scrape_daily_projections
 from src.mlb_client import fetch_daily_mlb_data
 import pandas as pd
@@ -29,10 +29,10 @@ def pull_daily_data():
     today = date.today().isoformat()
     data_dir = os.path.join('data', today)
     yahoo_dir = os.path.join(data_dir, 'yahoo')
-    proj_ros_dir = os.path.join(data_dir, 'projections_ros')
-    proj_daily_dir = os.path.join(data_dir, 'projections_daily')
+    fanduel_dir = os.path.join(data_dir, 'projections_fanduel')
+    fpros_dir = os.path.join(data_dir, 'projections_fpros')
     mlb_dir = os.path.join(data_dir, 'mlb')
-    for d in [yahoo_dir, proj_ros_dir, proj_daily_dir, mlb_dir]:
+    for d in [yahoo_dir, fanduel_dir, fpros_dir, mlb_dir]:
         os.makedirs(d, exist_ok=True)
 
     print(f"=== Daily Pull for {today} ===")
@@ -79,17 +79,19 @@ def pull_daily_data():
     fa_stats.to_csv(os.path.join(yahoo_dir, 'fa_stats.csv'), index=False)
     print(f"  Got stats for {len(fa_stats)} free agents")
 
-    # 6. FanGraphs ROS projections (Depth Charts)
-    print("\n[6/8] Fetching FanGraphs ROS projections...")
-    hitter_proj, pitcher_proj = scrape_fangraphs_projections()
-    hitter_proj.to_csv(os.path.join(proj_ros_dir, 'hitters.csv'), index=False)
-    pitcher_proj.to_csv(os.path.join(proj_ros_dir, 'pitchers.csv'), index=False)
+    # 6. FanDuel DFS daily projections
+    print("\n[6/8] Fetching FanDuel DFS projections...")
+    fd_batters, fd_pitchers, slate_name = scrape_fanduel_daily(today)
+    fd_batters.to_csv(os.path.join(fanduel_dir, 'batters.csv'), index=False)
+    fd_pitchers.to_csv(os.path.join(fanduel_dir, 'pitchers.csv'), index=False)
+    with open(os.path.join(fanduel_dir, 'slate.txt'), 'w') as f:
+        f.write(slate_name)
 
     # 7. FantasyPros daily projections
     print("\n[7/8] Fetching FantasyPros daily projections...")
-    daily_hitters, daily_pitchers = scrape_daily_projections()
-    daily_hitters.to_csv(os.path.join(proj_daily_dir, 'hitters.csv'), index=False)
-    daily_pitchers.to_csv(os.path.join(proj_daily_dir, 'pitchers.csv'), index=False)
+    fp_hitters, fp_pitchers = scrape_daily_projections()
+    fp_hitters.to_csv(os.path.join(fpros_dir, 'hitters.csv'), index=False)
+    fp_pitchers.to_csv(os.path.join(fpros_dir, 'pitchers.csv'), index=False)
 
     # 8. MLB daily games + lineups
     print("\n[8/8] Fetching today's MLB games and lineups...")
