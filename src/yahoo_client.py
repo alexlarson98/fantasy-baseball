@@ -77,7 +77,8 @@ class YahooClient:
         if not team_key:
             team_key = self.get_team_key(league_id)
 
-        root = self._get(f"{BASE_URL}/team/{team_key}/roster/players")
+        # Hydrate percent_owned so roster players carry ownership like free agents do.
+        root = self._get(f"{BASE_URL}/team/{team_key}/roster/players/percent_owned")
         players = []
         for player in root.findall('.//y:player', NS):
             players.append(self._parse_player(player))

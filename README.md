@@ -24,27 +24,43 @@ Or just double-click `FantasyBaseball.bat` on the desktop to run everything.
 
 **Auth:** Requires a Yahoo Developer app (OAuth2). Credentials stored in `oauth_token.json` (auto-refreshes after initial browser authorization).
 
-### FanDuel DFS Projections (`src/fanduel_scraper.py`)
+### PitcherList (`src/pitcherlist_scraper.py`)
 
-**Used for:** Today's matchup-adjusted projections from the FanDuel DFS main slate.
+**Used for:** Daily pitcher and pickup calls from people who actually watch baseball -- the **primary pitcher signal**. No auth required.
 
-- **Batter projections** (~160 players per day) -- fantasy points, salary, value, PA, R, H, 1B, 2B, 3B, HR, RBI, SB, BB, K, AVG, OBP, SLG, opponent, game time
-- **Pitcher projections** (~35 players per day) -- fantasy points, salary, value, W, L, IP, K, ERA, WHIP, GS, SV, ER, H, BB, HR, opponent, game time
+- **SP Streamer Ranks** -- starting pitchers bucketed by day into tiers: `Auto-Start`, `Probably Start`, `Questionable Start`, `Do Not Start`, with opponent and rostership %. Source: [SP Streamers column](https://pitcherlist.com/category/fantasy/starting-pitchers/sp-streamers/).
+- **Waiver Wire "Top Priority Players to Add"** -- a short curated pickup list (hitters and pitchers) with team, position, rostership %, and scouting notes. Source: [Waiver Wire column](https://pitcherlist.com/category/fantasy/waiver-wire/).
+- **Top 150 Hitters** -- the weekly rest-of-season hitter value ranking (rank, team, position, tier). Source: [Hitter List column](https://pitcherlist.com/category/fantasy/hitters-fantasy/hitter-list/).
 
-**Auth:** None required. Uses the FanDuel Research GraphQL API directly.
+The daily post URLs are date-based and change every day, so the scraper hits the stable **category page** for each column and grabs the newest post.
 
-**Used by:** The pickup analyzer as the **primary ranking signal**. Fantasy points per game are FanDuel's DFS scoring, which translates well to daily start/sit and streaming decisions. Highly-ranked unowned players become recommended streamers.
+**Free-tier note:** the third day of streamer ranks (and a couple of grids) are gated behind PL Pro. We parse whatever is publicly visible (usually the first ~2 days) and degrade gracefully if the layout shifts.
+
+**Used by:** The recommender (pitcher start/sit driven by today's tier + MLB probable starters) and the pickup analyzer ("Top Priority Adds" cross-referenced against your league's free agents, plus the streamer board filtered to pitchers you can actually add).
 
 ### FantasyPros (`src/fantasypros_scraper.py`)
 
-**Used for:** Daily stat projections as a secondary source with VBR (Value-Based Ranking).
+**Used for:** Daily stat projections with VBR (Value-Based Ranking). The **primary hitter signal** and a **secondary pitcher cross-check**.
 
 - **Hitter projections** (~2,400 players) -- AB, R, HR, RBI, SB, AVG, OBP, H, 2B, 3B, BB, SO, plus computed TB
 - **Pitcher projections** (~270 players) -- IP, K, W, SV, ERA, WHIP, ER, H, BB, HR
 
 **Auth:** Requires a FantasyPros account (free tier only returns 10 rows). Session cookie stored in `.env` as `FANTASYPROS_COOKIE`. The scraper throws an error if the cookie expires -- refresh by logging into FantasyPros in your browser, running `document.cookie` in DevTools console, and updating the `.env` value. The `run_daily.py` script will prompt you to paste a new cookie on failure.
 
-**Used by:** The recommender as the primary ranking for start/sit. Shown as a secondary column in the pickup analyzer (FP#) for cross-reference with FanDuel's ranking.
+**Used by:** The recommender as the ranking for hitter start/sit, and shown as a secondary `FP#`/stat-line column next to the PitcherList tier for pitchers.
+
+### Baseball Savant (`src/savant_scraper.py`)
+
+**Used for:** Underlying Statcast skill -- the percentile rankings from a player's Savant page (higher percentile = better in Savant's orientation). No auth required.
+
+- **Hitter percentiles** (~250 qualified) -- xwOBA, xBA, xSLG, exit velo, barrel %, hard-hit %, bat speed, squared-up %, chase %, whiff %, K %, BB %
+- **Pitcher percentiles** (~300 qualified) -- xERA, xBA, fastball velo, exit velo, chase %, whiff %, K %, BB %, barrel %, hard-hit %, extension
+
+Pulled from Savant's bulk `percentile-rankings` leaderboard (one request each for batters/pitchers), matched to your players by name. Run values and raw decimal values are intentionally omitted -- the percentiles are the comparative-strength signal.
+
+**Composite score:** the percentiles are collapsed into a single **`SC` score (0-100, higher = better)** via a cluster-weighted average (see `HITTER_WEIGHTS` / `PITCHER_WEIGHTS` in `src/savant_scraper.py`). Weights are assigned per correlated cluster so a family of collinear metrics can't triple-count: for hitters, xwOBA anchors but is capped since it already absorbs xBA/xSLG, the contact-quality cluster (barrel/hard-hit/EV) is the most power-predictive, and plate discipline holds ~a third; for pitchers, strikeout/whiff ability (the most stable pitcher skill) is weighted highest and contact-suppression-against is kept modest. Missing metrics use available-case renormalization (never imputed), and a player needs the anchor(s) plus >=50% of the weight present or the score is left blank.
+
+**Used by:** The pickup analyzer, which shows the `SC:NN` score for every player in the add/play/drop lists, plus a dedicated **"Breakout Statcast Stars"** section -- unrostered free agents with an elite composite score (hitters and pitchers split), flagged `*` when Yahoo ownership is rising (the honest "breaking out" proxy, since Savant doesn't cheaply expose recent-window skill).
 
 ### MLB Stats API (`src/mlb_client.py`)
 
@@ -61,22 +77,23 @@ Or just double-click `FantasyBaseball.bat` on the desktop to run everything.
 
 ### `src/recommender.py` -- Start/Sit
 
-Combines FantasyPros daily projections + MLB game data to produce start/sit for your roster:
+Produces start/sit for your roster:
 
-- **START** -- best-ranked players that fill your active roster slots
-- **SIT (no game)** -- player's team doesn't play today
-- **SIT (not pitching)** -- pitcher not projected to start/appear today
-- **SIT (better options)** -- ranked lower than other players competing for the same slots
+- **Hitters** -- FantasyPros VBR (best-ranked hitters fill your active slots) + MLB "team plays today" check. Each line shows the player's composite Statcast `SC` score and Yahoo ownership rather than raw per-game projections.
+- **Pitchers** -- MLB probable starters + PitcherList tier: `Auto/Probably/Questionable Start` = START, `Do Not Start` = SIT, and rostered starters not in the streamer pool default to START when they're a probable today. Relievers (no `SP` eligibility) START whenever their team plays, since they accrue saves/holds daily. Non-probable starters SIT.
 
 ### `src/pickup_analyzer.py` -- Pickups & Streamers
 
-Combines FanDuel daily projections + FantasyPros + Yahoo ownership to surface:
+Combines PitcherList + FantasyPros + Yahoo ownership to surface:
 
-- **Your roster today** -- each player's FanDuel projected fantasy points, sorted
-- **Top available hitters** -- best batters from today's DFS slate that are free agents in your league
-- **Top available pitchers** -- same, for pitchers (great for streaming starts)
+- **Top Priority Adds** -- PitcherList's curated waiver list, flagged with whether each player is actually a free agent in *your* league (+ Yahoo ownership).
+- **Streaming pitchers today** -- today's PitcherList streamer board, filtered to arms available in your league and sorted by tier, with FantasyPros as a secondary column.
+- **Tomorrow's streamers to stash** -- next-day streamer tiers (when publicly visible), filtered to available arms, so you can add them before rivals.
+- **Best available hitters (PitcherList Top 150)** -- the weekly hitter ranking filtered to free agents in your league, best rank first.
+- **Top available hitters (FantasyPros)** -- best available batters by today's FantasyPros VBR.
 
-Pickups ranked higher than your lowest roster player are flagged as `<-- upgrade`.
+Every player line carries a single `SC:NN` composite Baseball Savant Statcast score (0-100, higher = better) so you can weigh underlying skill alongside rank/ownership, and a **Breakout Statcast Stars** section surfaces unrostered players whose skill the field hasn't caught up to yet.
+- **Roster snapshot** -- your hitters by FantasyPros VBR; your pitchers annotated with probable-today and any PitcherList tier.
 
 ## Setup
 
@@ -140,17 +157,20 @@ data/{YYYY-MM-DD}/
     free_agents.csv         # Top 500 available players (with ownership %)
     roster_stats.csv        # Your players' season stats
     fa_stats.csv            # Free agent season stats
-  projections_fanduel/
-    batters.csv             # FanDuel DFS daily batter projections
-    pitchers.csv             # FanDuel DFS daily pitcher projections
-    slate.txt                # Slate name used (e.g., "Main")
+  pitcherlist/
+    sp_streamers.csv        # SP streamer tiers by day (Auto/Probably/Questionable/Do Not Start)
+    waiver_adds.csv         # "Top Priority Players to Add"
+    top_hitters.csv         # Weekly Top 150 hitters (rank, team, position, tier)
   projections_fpros/
-    hitters.csv              # FantasyPros daily hitter projections
-    pitchers.csv             # FantasyPros daily pitcher projections
+    hitters.csv             # FantasyPros daily hitter projections
+    pitchers.csv            # FantasyPros daily pitcher projections (pitcher cross-check)
+  savant/
+    hitters.csv             # Statcast percentiles + composite score (hitters)
+    pitchers.csv            # Statcast percentiles + composite score (pitchers)
   mlb/
-    games.csv                # Today's MLB schedule + probable pitchers
-    lineups.csv              # Confirmed batting orders
-  report.txt                 # Full start/sit + pickups combined (run_daily.py)
+    games.csv               # Today's MLB schedule + probable pitchers
+    lineups.csv             # Confirmed batting orders
+  report.txt                # Full start/sit + pickups combined (run_daily.py)
 ```
 
 ## League Scoring Categories

@@ -60,6 +60,29 @@ TEAM_MAP = {
 }
 
 
+# Full MLB team name -> abbreviation (the schedule endpoint often omits abbreviations).
+NAME_TO_ABBR = {
+    'Arizona Diamondbacks': 'ARI', 'Athletics': 'ATH', 'Oakland Athletics': 'ATH',
+    'Atlanta Braves': 'ATL', 'Baltimore Orioles': 'BAL', 'Boston Red Sox': 'BOS',
+    'Chicago Cubs': 'CHC', 'Chicago White Sox': 'CWS', 'Cincinnati Reds': 'CIN',
+    'Cleveland Guardians': 'CLE', 'Colorado Rockies': 'COL', 'Detroit Tigers': 'DET',
+    'Houston Astros': 'HOU', 'Kansas City Royals': 'KC', 'Los Angeles Angels': 'LAA',
+    'Los Angeles Dodgers': 'LAD', 'Miami Marlins': 'MIA', 'Milwaukee Brewers': 'MIL',
+    'Minnesota Twins': 'MIN', 'New York Mets': 'NYM', 'New York Yankees': 'NYY',
+    'Philadelphia Phillies': 'PHI', 'Pittsburgh Pirates': 'PIT', 'San Diego Padres': 'SD',
+    'San Francisco Giants': 'SF', 'Seattle Mariners': 'SEA', 'St. Louis Cardinals': 'STL',
+    'Tampa Bay Rays': 'TB', 'Texas Rangers': 'TEX', 'Toronto Blue Jays': 'TOR',
+    'Washington Nationals': 'WSH',
+}
+
+
+def _team_abbr(abbr, full):
+    """Resolve a team abbreviation, falling back to a name lookup (schedule abbr is often blank)."""
+    if isinstance(abbr, str) and abbr and abbr.lower() != 'nan':
+        return abbr
+    return NAME_TO_ABBR.get(str(full), str(full) if pd.notna(full) else '')
+
+
 def _has_game_today(player_team, games_df):
     """Check if a player's team has a game today."""
     if games_df.empty:
@@ -72,6 +95,66 @@ def _has_game_today(player_team, games_df):
         games_df['home_team'].fillna('').str.lower().tolist()
     )
     return any(team_name in t for t in all_teams)
+
+
+def _probable_today(name, games_df):
+    """
+    Is this pitcher a probable starter today? Uses MLB Stats API probables.
+
+    Returns (is_probable, opponent_abbr).
+    """
+    if games_df is None or games_df.empty:
+        return False, ''
+    norm = _normalize_name(name)
+    for _, g in games_df.iterrows():
+        if _normalize_name(g.get('away_pitcher', '')) == norm:
+            return True, _team_abbr(g.get('home_abbr'), g.get('home_team'))
+        if _normalize_name(g.get('home_pitcher', '')) == norm:
+            return True, _team_abbr(g.get('away_abbr'), g.get('away_team'))
+    return False, ''
+
+
+def _load_savant_scores(data_dir, kind):
+    """Map normalized name -> composite Statcast score for hitters/pitchers."""
+    path = os.path.join(data_dir, 'savant', f'{kind}.csv')
+    if not os.path.exists(path):
+        return {}
+    df = pd.read_csv(path)
+    if df.empty or 'name' not in df.columns or 'score' not in df.columns:
+        return {}
+    return {
+        _normalize_name(r['name']): (int(r['score']) if pd.notna(r['score']) else None)
+        for _, r in df.iterrows()
+    }
+
+
+def _fmt_own(own, delta):
+    """Format ownership like 'Own:47%+1' (blank if unknown)."""
+    if own is None or (isinstance(own, float) and pd.isna(own)):
+        return ''
+    delta = 0 if (delta is None or (isinstance(delta, float) and pd.isna(delta))) else int(delta)
+    delta_str = f"+{delta}" if delta > 0 else (str(delta) if delta < 0 else '')
+    return f"Own:{int(own)}%{delta_str}"
+
+
+def _load_streamer_tiers(data_dir, game_date):
+    """Load today's PitcherList streamer tiers as a name -> {tier, tier_score, opp, rostership} map."""
+    path = os.path.join(data_dir, 'pitcherlist', 'sp_streamers.csv')
+    if not os.path.exists(path):
+        return {}
+    df = pd.read_csv(path)
+    if df.empty or 'day' not in df.columns:
+        return {}
+    today = df[df['day'] == game_date]
+    tiers = {}
+    for _, r in today.iterrows():
+        tiers[_normalize_name(r['name'])] = {
+            'tier': r.get('tier'),
+            'tier_score': r.get('tier_score'),
+            'opp': r.get('opp', ''),
+            'rostership': r.get('rostership'),
+        }
+    return tiers
 
 
 def generate_recommendations(data_dir=None):
@@ -87,11 +170,17 @@ def generate_recommendations(data_dir=None):
     if data_dir is None:
         data_dir = os.path.join('data', date.today().isoformat())
 
+    game_date = os.path.basename(os.path.normpath(data_dir))
+
     # Load data
     roster = pd.read_csv(os.path.join(data_dir, 'yahoo', 'roster.csv'))
     daily_hitters = pd.read_csv(os.path.join(data_dir, 'projections_fpros', 'hitters.csv'))
     daily_pitchers = pd.read_csv(os.path.join(data_dir, 'projections_fpros', 'pitchers.csv'))
     games = pd.read_csv(os.path.join(data_dir, 'mlb', 'games.csv'))
+    # PitcherList tiers are the primary pitcher signal; FantasyPros is a cross-check.
+    streamer_tiers = _load_streamer_tiers(data_dir, game_date)
+    sv_hitter_scores = _load_savant_scores(data_dir, 'hitters')
+    sv_pitcher_scores = _load_savant_scores(data_dir, 'pitchers')
 
     with open(os.path.join(data_dir, 'yahoo', 'league_settings.json')) as f:
         settings = json.load(f)
@@ -126,6 +215,8 @@ def generate_recommendations(data_dir=None):
             'team': player['team'],
             'position': player['position'],
             'current_slot': player['selected_position'],
+            'sc': sv_hitter_scores.get(_normalize_name(player['name'])),
+            'own': _fmt_own(player.get('percent_owned'), player.get('percent_owned_delta')),
         }
 
         # Check if team plays today
@@ -202,66 +293,67 @@ def generate_recommendations(data_dir=None):
             'team': player['team'],
             'position': player['position'],
             'current_slot': player['selected_position'],
+            'sc': sv_pitcher_scores.get(_normalize_name(player['name'])),
+            'own': _fmt_own(player.get('percent_owned'), player.get('percent_owned_delta')),
         }
 
-        has_game = _has_game_today(player['team'], games)
-        rec['has_game'] = has_game
+        position = player['position'] or ''
+        # Reliever-type = no starter eligibility. Yahoo may list a reliever as
+        # generic 'P' rather than 'RP', so key off the absence of 'SP'.
+        is_reliever_only = 'SP' not in position
 
-        # Match to daily projection
+        # FantasyPros pitcher projection -- kept as a secondary cross-check only.
         proj = _match_projection(player['name'], daily_pitchers)
-        if proj is not None:
-            rec['daily_rank'] = int(proj.get('VBR', 9999)) if pd.notna(proj.get('VBR')) else 9999
-            rec['opp'] = proj.get('Opp', '')
-            rec['proj_IP'] = proj.get('IP', 0)
-            rec['proj_K'] = proj.get('K', 0)
-            rec['proj_W'] = proj.get('W', 0)
-            rec['proj_ERA'] = proj.get('ERA', 0)
-            rec['proj_WHIP'] = proj.get('WHIP', 0)
-            rec['proj_SV'] = proj.get('SV', 0)
-            rec['pitching_today'] = True
-        else:
-            rec['daily_rank'] = 9999
-            rec['opp'] = ''
-            rec['proj_IP'] = 0
-            rec['proj_K'] = 0
-            rec['proj_W'] = 0
-            rec['proj_ERA'] = 0
-            rec['proj_WHIP'] = 0
-            rec['proj_SV'] = 0
-            rec['pitching_today'] = False
+        rec['fp_rank'] = (int(proj.get('VBR', 9999)) if proj is not None and pd.notna(proj.get('VBR'))
+                          else 9999)
+        rec['proj_K'] = proj.get('K', 0) if proj is not None else 0
+        rec['proj_ERA'] = proj.get('ERA', 0) if proj is not None else 0
+        rec['proj_WHIP'] = proj.get('WHIP', 0) if proj is not None else 0
 
-        if not has_game:
-            rec['action'] = 'SIT'
-            rec['reason'] = 'No game today'
-        elif not rec['pitching_today']:
-            rec['action'] = 'SIT'
-            rec['reason'] = 'Not projected to pitch today'
+        # PitcherList tier (primary signal for starters).
+        tier = streamer_tiers.get(_normalize_name(player['name']))
+        rec['tier'] = tier['tier'] if tier else ''
+        tier_score = tier['tier_score'] if tier else None
+        rec['tier_score'] = tier_score
+
+        if is_reliever_only:
+            # Relievers accrue saves/holds daily -- start them whenever the team plays.
+            has_game = _has_game_today(player['team'], games)
+            rec['probable'] = False
+            rec['opp'] = ''
+            rec['sort_key'] = -1  # keep active relievers at the top of STARTs
+            if has_game:
+                rec['action'] = 'START'
+                rec['reason'] = 'Reliever (team plays today)'
+            else:
+                rec['action'] = 'SIT'
+                rec['reason'] = 'No game today'
         else:
-            rec['action'] = 'TBD'
-            rec['reason'] = ''
+            probable, opp = _probable_today(player['name'], games)
+            rec['probable'] = probable
+            tier_opp = tier['opp'] if (tier and isinstance(tier.get('opp'), str)) else ''
+            rec['opp'] = tier_opp or opp
+            # Rostered starters (not in the streamer pool) sort ahead of streamers.
+            rec['sort_key'] = 0 if tier_score is None else tier_score
+            if not probable:
+                rec['action'] = 'SIT'
+                rec['reason'] = 'Not starting today'
+            elif tier_score == 4:
+                rec['action'] = 'SIT'
+                rec['reason'] = 'PitcherList: Do Not Start'
+            elif tier:
+                rec['action'] = 'START'
+                rec['reason'] = f"PitcherList: {tier['tier']}"
+            else:
+                rec['action'] = 'START'
+                rec['reason'] = 'Rostered starter'
 
         pitcher_recs.append(rec)
 
     pitcher_df = pd.DataFrame(pitcher_recs)
 
-    # Rank active pitchers
-    active_p = pitcher_df[pitcher_df['action'] == 'TBD'].sort_values('daily_rank')
-
-    pitcher_slots_count = sum(
-        int(p['count']) for p in hitter_slots_config
-        if p['position'] in ('SP', 'P')
-    )
-
-    for i, idx in enumerate(active_p.index):
-        if i < pitcher_slots_count:
-            pitcher_df.loc[idx, 'action'] = 'START'
-            pitcher_df.loc[idx, 'reason'] = f'# {int(pitcher_df.loc[idx, "daily_rank"])} today'
-        else:
-            pitcher_df.loc[idx, 'action'] = 'SIT'
-            pitcher_df.loc[idx, 'reason'] = f'# {int(pitcher_df.loc[idx, "daily_rank"])} (better options available)'
-
     pitcher_df = pitcher_df.sort_values(
-        ['action', 'daily_rank'],
+        ['action', 'sort_key', 'fp_rank'],
         key=lambda x: x.map({'START': 0, 'SIT': 1}) if x.name == 'action' else x,
         ascending=True
     ).reset_index(drop=True)
@@ -288,13 +380,14 @@ def print_recommendations(recs):
     print(f"\n  START ({len(starters)}):")
     for _, p in starters.iterrows():
         rank = int(p['daily_rank']) if p['daily_rank'] < 9999 else '?'
-        proj = f"R:{p['proj_R']:.2f} HR:{p['proj_HR']:.2f} RBI:{p['proj_RBI']:.2f} SB:{p['proj_SB']:.2f} TB:{p['proj_TB']:.2f} OBP:{p['proj_OBP']:.3f}"
-        print(f"    # {rank:<4} {p['name']:<25} {p['team']:<5} {p['opp']:<8} [{p['current_slot']:<4}] {proj}")
+        sc = f"SC:{int(p['sc'])}" if pd.notna(p.get('sc')) else ''
+        print(f"    # {rank:<4} {p['name']:<25} {p['team']:<5} {p['opp']:<8} [{p['current_slot']:<4}] {sc:<6} {p['own']}")
 
     print(f"\n  SIT ({len(sitters)}):")
     for _, p in sitters.iterrows():
         rank = int(p['daily_rank']) if p['daily_rank'] < 9999 else '-'
-        print(f"    # {str(rank):<4} {p['name']:<25} {p['team']:<5} [{p['current_slot']:<4}] {p['reason']}")
+        sc = f"SC:{int(p['sc'])}" if pd.notna(p.get('sc')) else ''
+        print(f"    # {str(rank):<4} {p['name']:<25} {p['team']:<5} [{p['current_slot']:<4}] {sc:<6} {p['own']:<11} {p['reason']}")
 
     # Pitchers
     print(f"\n  PITCHERS")
@@ -305,14 +398,15 @@ def print_recommendations(recs):
 
     print(f"\n  START ({len(p_starters)}):")
     for _, p in p_starters.iterrows():
-        rank = int(p['daily_rank']) if p['daily_rank'] < 9999 else '?'
-        proj = f"IP:{p['proj_IP']:.1f} K:{p['proj_K']:.1f} W:{p['proj_W']:.2f} ERA:{p['proj_ERA']:.2f} WHIP:{p['proj_WHIP']:.2f}"
-        print(f"    # {rank:<4} {p['name']:<25} {p['team']:<5} {p['opp']:<8} [{p['current_slot']:<4}] {proj}")
+        tier = p.get('tier') or 'roster'
+        opp = f"vs {p['opp']}" if p['opp'] else ''
+        sc = f"SC:{int(p['sc'])}" if pd.notna(p.get('sc')) else ''
+        print(f"    [{tier:<18}] {p['name']:<24} {p['team']:<5} {opp:<8} [{p['current_slot']:<4}] {sc:<6} {p['own']}")
 
     print(f"\n  SIT ({len(p_sitters)}):")
     for _, p in p_sitters.iterrows():
-        rank = int(p['daily_rank']) if p['daily_rank'] < 9999 else '-'
-        print(f"    # {str(rank):<4} {p['name']:<25} {p['team']:<5} [{p['current_slot']:<4}] {p['reason']}")
+        sc = f"SC:{int(p['sc'])}" if pd.notna(p.get('sc')) else ''
+        print(f"    {p['name']:<24} {p['team']:<5} [{p['current_slot']:<4}] {sc:<6} {p['own']:<11} {p['reason']}")
 
     print("\n" + "=" * 70)
 

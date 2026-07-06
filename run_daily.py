@@ -2,8 +2,8 @@
 Daily fantasy baseball assistant.
 
 Runs the full pipeline:
-  1. Pulls fresh data from Yahoo, FanGraphs, FantasyPros, MLB
-  2. Generates start/sit recommendations
+  1. Pulls fresh data from Yahoo, PitcherList, FantasyPros, MLB
+  2. Generates start/sit recommendations (PitcherList tiers for pitchers)
   3. Analyzes roster for pickup opportunities
   4. Saves a readable report to data/{date}/report.txt
 

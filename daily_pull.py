@@ -1,18 +1,20 @@
 """
-Daily data pull from Yahoo Fantasy, FanDuel, FantasyPros, and MLB Stats API.
+Daily data pull from Yahoo Fantasy, PitcherList, FantasyPros, and MLB Stats API.
 
 Saves everything to data/{date}/ organized by source:
   yahoo/               - Roster, free agents, season stats, league settings
-  projections_fanduel/ - FanDuel DFS daily projections (per-game stats + fantasy points)
-  projections_fpros/   - FantasyPros daily projections (per-game stats)
+  pitcherlist/         - SP streamer tiers + waiver "Top Priority" adds (primary pitcher signal)
+  projections_fpros/   - FantasyPros daily projections (hitter signal + pitcher cross-check)
+  savant/              - Baseball Savant Statcast percentile rankings (underlying skill)
   mlb/                 - Today's games, lineups, probable pitchers
 """
 import os
 from datetime import date
 from dotenv import load_dotenv
 from src.yahoo_client import YahooClient
-from src.fanduel_scraper import scrape_fanduel_daily
+from src.pitcherlist_scraper import scrape_pitcherlist_daily
 from src.fantasypros_scraper import scrape_daily_projections
+from src.savant_scraper import scrape_savant_daily
 from src.mlb_client import fetch_daily_mlb_data
 import pandas as pd
 import json
@@ -29,10 +31,11 @@ def pull_daily_data():
     today = date.today().isoformat()
     data_dir = os.path.join('data', today)
     yahoo_dir = os.path.join(data_dir, 'yahoo')
-    fanduel_dir = os.path.join(data_dir, 'projections_fanduel')
+    pitcherlist_dir = os.path.join(data_dir, 'pitcherlist')
     fpros_dir = os.path.join(data_dir, 'projections_fpros')
+    savant_dir = os.path.join(data_dir, 'savant')
     mlb_dir = os.path.join(data_dir, 'mlb')
-    for d in [yahoo_dir, fanduel_dir, fpros_dir, mlb_dir]:
+    for d in [yahoo_dir, pitcherlist_dir, fpros_dir, savant_dir, mlb_dir]:
         os.makedirs(d, exist_ok=True)
 
     print(f"=== Daily Pull for {today} ===")
@@ -42,7 +45,7 @@ def pull_daily_data():
     client = YahooClient()
 
     # 1. League settings
-    print("[1/8] Fetching league settings...")
+    print("[1/9] Fetching league settings...")
     settings = client.get_league_settings(league_id)
     with open(os.path.join(yahoo_dir, 'league_settings.json'), 'w') as f:
         json.dump(settings, f, indent=2)
@@ -51,7 +54,7 @@ def pull_daily_data():
     print(f"  Roster positions: {[p['position'] + 'x' + p['count'] for p in settings['roster_positions']]}")
 
     # 2. Roster
-    print("\n[2/8] Fetching your roster...")
+    print("\n[2/9] Fetching your roster...")
     roster = client.get_roster(league_id)
     print(f"  Found {len(roster)} players on roster")
     for p in roster:
@@ -60,41 +63,46 @@ def pull_daily_data():
     pd.DataFrame(roster).to_csv(os.path.join(yahoo_dir, 'roster.csv'), index=False)
 
     # 3. Free agents (top 500)
-    print("\n[3/8] Fetching free agents (top 500)...")
+    print("\n[3/9] Fetching free agents (top 500)...")
     free_agents = client.get_free_agents(league_id, count=500)
     print(f"  Found {len(free_agents)} free agents")
     pd.DataFrame(free_agents).to_csv(os.path.join(yahoo_dir, 'free_agents.csv'), index=False)
 
     # 4. Season stats for roster
-    print("\n[4/8] Fetching season stats for roster players...")
+    print("\n[4/9] Fetching season stats for roster players...")
     roster_keys = [p['player_key'] for p in roster]
     roster_stats = client.get_player_stats(league_id, roster_keys, stat_type='season')
     roster_stats.to_csv(os.path.join(yahoo_dir, 'roster_stats.csv'), index=False)
     print(f"  Got stats for {len(roster_stats)} roster players")
 
     # 5. Season stats for free agents
-    print("\n[5/8] Fetching season stats for free agents...")
+    print("\n[5/9] Fetching season stats for free agents...")
     fa_keys = [p['player_key'] for p in free_agents]
     fa_stats = client.get_player_stats(league_id, fa_keys, stat_type='season')
     fa_stats.to_csv(os.path.join(yahoo_dir, 'fa_stats.csv'), index=False)
     print(f"  Got stats for {len(fa_stats)} free agents")
 
-    # 6. FanDuel DFS daily projections
-    print("\n[6/8] Fetching FanDuel DFS projections...")
-    fd_batters, fd_pitchers, slate_name = scrape_fanduel_daily(today)
-    fd_batters.to_csv(os.path.join(fanduel_dir, 'batters.csv'), index=False)
-    fd_pitchers.to_csv(os.path.join(fanduel_dir, 'pitchers.csv'), index=False)
-    with open(os.path.join(fanduel_dir, 'slate.txt'), 'w') as f:
-        f.write(slate_name)
+    # 6. PitcherList SP streamer tiers + waiver "Top Priority" adds + Top 150 hitters
+    print("\n[6/9] Fetching PitcherList streamer ranks, waiver adds, top-150 hitters...")
+    pl_streamers, pl_waiver, pl_top_hitters = scrape_pitcherlist_daily(today)
+    pl_streamers.to_csv(os.path.join(pitcherlist_dir, 'sp_streamers.csv'), index=False)
+    pl_waiver.to_csv(os.path.join(pitcherlist_dir, 'waiver_adds.csv'), index=False)
+    pl_top_hitters.to_csv(os.path.join(pitcherlist_dir, 'top_hitters.csv'), index=False)
 
-    # 7. FantasyPros daily projections
-    print("\n[7/8] Fetching FantasyPros daily projections...")
+    # 7. FantasyPros daily projections (hitter signal + pitcher cross-check)
+    print("\n[7/9] Fetching FantasyPros daily projections...")
     fp_hitters, fp_pitchers = scrape_daily_projections()
     fp_hitters.to_csv(os.path.join(fpros_dir, 'hitters.csv'), index=False)
     fp_pitchers.to_csv(os.path.join(fpros_dir, 'pitchers.csv'), index=False)
 
-    # 8. MLB daily games + lineups
-    print("\n[8/8] Fetching today's MLB games and lineups...")
+    # 8. Baseball Savant Statcast percentile rankings (underlying skill)
+    print("\n[8/9] Fetching Baseball Savant Statcast percentiles...")
+    sv_hitters, sv_pitchers = scrape_savant_daily(int(today[:4]))
+    sv_hitters.to_csv(os.path.join(savant_dir, 'hitters.csv'), index=False)
+    sv_pitchers.to_csv(os.path.join(savant_dir, 'pitchers.csv'), index=False)
+
+    # 9. MLB daily games + lineups
+    print("\n[9/9] Fetching today's MLB games and lineups...")
     games_df, lineups_df = fetch_daily_mlb_data(today)
     games_df.to_csv(os.path.join(mlb_dir, 'games.csv'), index=False)
     lineups_df.to_csv(os.path.join(mlb_dir, 'lineups.csv'), index=False)
