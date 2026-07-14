@@ -82,12 +82,13 @@ def pull_daily_data():
     fa_stats.to_csv(os.path.join(yahoo_dir, 'fa_stats.csv'), index=False)
     print(f"  Got stats for {len(fa_stats)} free agents")
 
-    # 6. PitcherList SP streamer tiers + waiver "Top Priority" adds + Top 150 hitters
-    print("\n[6/9] Fetching PitcherList streamer ranks, waiver adds, top-150 hitters...")
-    pl_streamers, pl_waiver, pl_top_hitters = scrape_pitcherlist_daily(today)
+    # 6. PitcherList: streamer tiers, waiver "Top Priority", weekly Top 150 H / Top 100 SP
+    print("\n[6/9] Fetching PitcherList streamer ranks, waiver adds, weekly rankings...")
+    pl_streamers, pl_waiver, pl_top_hitters, pl_top_pitchers = scrape_pitcherlist_daily(today)
     pl_streamers.to_csv(os.path.join(pitcherlist_dir, 'sp_streamers.csv'), index=False)
     pl_waiver.to_csv(os.path.join(pitcherlist_dir, 'waiver_adds.csv'), index=False)
     pl_top_hitters.to_csv(os.path.join(pitcherlist_dir, 'top_hitters.csv'), index=False)
+    pl_top_pitchers.to_csv(os.path.join(pitcherlist_dir, 'top_pitchers.csv'), index=False)
 
     # 7. FantasyPros daily projections (hitter signal + pitcher cross-check)
     print("\n[7/9] Fetching FantasyPros daily projections...")

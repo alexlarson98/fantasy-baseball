@@ -110,6 +110,7 @@ def analyze_pickups(data_dir=None):
     streamers = _safe_read(os.path.join(data_dir, 'pitcherlist', 'sp_streamers.csv'))
     waiver = _safe_read(os.path.join(data_dir, 'pitcherlist', 'waiver_adds.csv'))
     top_hitters = _safe_read(os.path.join(data_dir, 'pitcherlist', 'top_hitters.csv'))
+    top_pitchers = _safe_read(os.path.join(data_dir, 'pitcherlist', 'top_pitchers.csv'))
     sv_hitters = _name_map(_safe_read(os.path.join(data_dir, 'savant', 'hitters.csv')))
     sv_pitchers = _name_map(_safe_read(os.path.join(data_dir, 'savant', 'pitchers.csv')))
 
@@ -124,42 +125,58 @@ def analyze_pickups(data_dir=None):
 
     fa_map = _fa_lookup(free_agents)
 
-    hitter_week = int(top_hitters['week'].iloc[0]) if (not top_hitters.empty
-                  and pd.notna(top_hitters['week'].iloc[0])) else None
+    hitter_week = _week_of(top_hitters)
+    pitcher_week = _week_of(top_pitchers)
+    sp_rank_map = ({_normalize_name(r['name']): int(r['rank']) for _, r in top_pitchers.iterrows()}
+                   if not top_pitchers.empty else {})
 
     return {
         'tomorrow': tomorrow,
         'hitter_week': hitter_week,
+        'pitcher_week': pitcher_week,
         'top_priority': _analyze_top_priority(waiver, fa_map),
         'breakout_stars': _analyze_breakout_stars(free_agents, sv_hitters, sv_pitchers),
         'streaming_pitchers': _analyze_streaming_pitchers(today_streamers, fa_map, fp_pitchers, sv_pitchers),
         # Pitchers starting TOMORROW that are still available -- grab them before rivals do.
         'streaming_pitchers_tomorrow': _analyze_streaming_pitchers(tomorrow_streamers, fa_map, fp_pitchers, sv_pitchers),
-        'top_hitters_available': _analyze_top_hitters_available(top_hitters, fa_map, sv_hitters),
+        'top_pitchers_available': _analyze_top_ranked_available(top_pitchers, fa_map, sv_pitchers),
+        'top_hitters_available': _analyze_top_ranked_available(top_hitters, fa_map, sv_hitters),
         'streaming_hitters': _analyze_streaming_hitters(free_agents, fp_hitters, sv_hitters),
         'roster_hitters': _analyze_roster_hitters(roster, fp_hitters, sv_hitters),
-        'roster_pitchers': _analyze_roster_pitchers(roster, today_streamers, games, sv_pitchers),
+        'roster_pitchers': _analyze_roster_pitchers(roster, today_streamers, games, sv_pitchers, sp_rank_map),
     }
 
 
-def _analyze_top_hitters_available(top_hitters, fa_map, sv_hitters=None, limit=25):
-    """PitcherList Top-150 hitters that are free agents in your league, best rank first."""
-    sv_hitters = sv_hitters or {}
-    if top_hitters.empty:
+def _week_of(df):
+    """Extract the ranking week number from a weekly-ranking DataFrame, or None."""
+    if df is None or df.empty or 'week' not in df.columns or pd.isna(df['week'].iloc[0]):
+        return None
+    return int(df['week'].iloc[0])
+
+
+def _analyze_top_ranked_available(ranking, fa_map, sv_map=None, limit=25):
+    """
+    PitcherList weekly ranking (Top 150 hitters / Top 100 SP) filtered to free agents
+    in your league, best rank first. Rank takes precedence; the Statcast score rides
+    along as a secondary column.
+    """
+    sv_map = sv_map or {}
+    if ranking is None or ranking.empty:
         return pd.DataFrame()
     rows = []
-    for _, h in top_hitters.iterrows():
-        fa = _available_in_league(h['name'], fa_map)
+    for _, r in ranking.iterrows():
+        fa = _available_in_league(r['name'], fa_map)
         if fa is None:
             continue
+        position = r['position'] if ('position' in r and pd.notna(r.get('position'))) else ''
         rows.append({
-            'rank': h['rank'],
-            'name': h['name'],
-            'team': h.get('team', ''),
-            'position': h.get('position', ''),
-            'tier': h.get('tier'),
+            'rank': r['rank'],
+            'name': r['name'],
+            'team': r.get('team', ''),
+            'position': position,
+            'tier': r.get('tier'),
             'own': _fmt_own(fa),
-            'sc': _sv_score(h['name'], sv_hitters),
+            'sc': _sv_score(r['name'], sv_map),
         })
     df = pd.DataFrame(rows)
     if df.empty:
@@ -288,9 +305,10 @@ def _analyze_roster_hitters(roster, fp_hitters, sv_hitters=None):
     return df.sort_values(['playing', 'fp_rank'], ascending=[False, True]).reset_index(drop=True)
 
 
-def _analyze_roster_pitchers(roster, streamers, games, sv_pitchers=None):
-    """Your pitchers annotated with probable-today and any PitcherList tier."""
+def _analyze_roster_pitchers(roster, streamers, games, sv_pitchers=None, sp_rank=None):
+    """Your pitchers annotated with probable-today, PitcherList Top-100 rank, and any tier."""
     sv_pitchers = sv_pitchers or {}
+    sp_rank = sp_rank or {}
     roster_pitchers = roster[~roster['position'].apply(_is_hitter)]
     tier_map = {}
     if not streamers.empty:
@@ -315,6 +333,7 @@ def _analyze_roster_pitchers(roster, streamers, games, sv_pitchers=None):
             'status': status,
             'opp': opp or (s['opp'] if s is not None else ''),
             'tier': s['tier'] if s is not None else '',
+            'pl_rank': sp_rank.get(_normalize_name(p['name'])),
             'sc': _sv_score(p['name'], sv_pitchers),
         })
     return pd.DataFrame(rows)
@@ -359,6 +378,7 @@ def print_analysis(results):
     bo = results.get('breakout_stars')
     s_p = results['streaming_pitchers']
     s_p_tmrw = results.get('streaming_pitchers_tomorrow')
+    tp_sp = results.get('top_pitchers_available')
     th = results.get('top_hitters_available')
     s_h = results['streaming_hitters']
     r_h = results['roster_hitters']
@@ -420,10 +440,23 @@ def print_analysis(results):
             print(f"  [{p['tier']:<18}] {p['name']:<22} {p['matchup']:<10} "
                   f"rost {rost:<5} {p['own']:<10} {_sv_fmt(p.get('sc'))}")
 
+    # --- Top-100 Starting Pitchers available in your league (PitcherList weekly) ---
+    p_week = results.get('pitcher_week')
+    p_wk_label = f"Week {p_week}" if p_week else "latest week"
+    print(f"\n  BEST AVAILABLE STARTING PITCHERS (PitcherList Top 100, {p_wk_label}) -- rank first")
+    print("-" * 100)
+    if tp_sp is not None and not tp_sp.empty:
+        for _, p in tp_sp.iterrows():
+            tier = f"T{int(p['tier'])}" if pd.notna(p['tier']) else ''
+            print(f"  #{int(p['rank']):<4} {tier:<4} {p['name']:<24} {p['team']:<4} "
+                  f"{p['own']:<11} {_sv_fmt(p.get('sc'))}")
+    else:
+        print("  No PitcherList Top-100 starting pitchers available in your league.")
+
     # --- Top-150 Hitters available in your league (PitcherList weekly) ---
     week = results.get('hitter_week')
     wk_label = f"Week {week}" if week else "latest week"
-    print(f"\n  BEST AVAILABLE HITTERS (PitcherList Top 150, {wk_label})")
+    print(f"\n  BEST AVAILABLE HITTERS (PitcherList Top 150, {wk_label}) -- rank first")
     print("-" * 100)
     if th is not None and not th.empty:
         for _, p in th.iterrows():
@@ -455,14 +488,15 @@ def print_analysis(results):
                 print(f"  {'-- not in projections --':>26}  {p['name']:<22} {p['team']:<4} "
                       f"[{p['slot']:<4}] {_sv_fmt(p.get('sc'))}")
 
-    print("\n  YOUR PITCHERS (probable starters + PitcherList tier)")
+    print("\n  YOUR PITCHERS (probable starters + PitcherList Top-100 rank + tier)")
     print("-" * 100)
     if r_p is not None and not r_p.empty:
         for _, p in r_p.iterrows():
             opp = f"vs {p['opp']}" if p['opp'] else ''
             tier = f"[{p['tier']}]" if p['tier'] else ''
+            plr = f"PL#{int(p['pl_rank'])}" if pd.notna(p.get('pl_rank')) else ''
             print(f"  {p['status']:<10} {p['name']:<22} {p['team']:<4} {opp:<8} [{p['slot']:<4}] "
-                  f"{tier:<20} {_sv_fmt(p.get('sc'))}")
+                  f"{plr:<7} {tier:<20} {_sv_fmt(p.get('sc'))}")
 
     print("\n" + "=" * 74)
 

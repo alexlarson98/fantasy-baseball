@@ -31,6 +31,7 @@ Or just double-click `FantasyBaseball.bat` on the desktop to run everything.
 - **SP Streamer Ranks** -- starting pitchers bucketed by day into tiers: `Auto-Start`, `Probably Start`, `Questionable Start`, `Do Not Start`, with opponent and rostership %. Source: [SP Streamers column](https://pitcherlist.com/category/fantasy/starting-pitchers/sp-streamers/).
 - **Waiver Wire "Top Priority Players to Add"** -- a short curated pickup list (hitters and pitchers) with team, position, rostership %, and scouting notes. Source: [Waiver Wire column](https://pitcherlist.com/category/fantasy/waiver-wire/).
 - **Top 150 Hitters** -- the weekly rest-of-season hitter value ranking (rank, team, position, tier). Source: [Hitter List column](https://pitcherlist.com/category/fantasy/hitters-fantasy/hitter-list/).
+- **Top 100 Starting Pitchers** -- the weekly rest-of-season SP value ranking (rank, team, tier, badges). Source: [The List column](https://pitcherlist.com/category/fantasy/starting-pitchers/the-list/).
 
 The daily post URLs are date-based and change every day, so the scraper hits the stable **category page** for each column and grabs the newest post.
 
@@ -89,6 +90,7 @@ Combines PitcherList + FantasyPros + Yahoo ownership to surface:
 - **Top Priority Adds** -- PitcherList's curated waiver list, flagged with whether each player is actually a free agent in *your* league (+ Yahoo ownership).
 - **Streaming pitchers today** -- today's PitcherList streamer board, filtered to arms available in your league and sorted by tier, with FantasyPros as a secondary column.
 - **Tomorrow's streamers to stash** -- next-day streamer tiers (when publicly visible), filtered to available arms, so you can add them before rivals.
+- **Best available starting pitchers (PitcherList Top 100)** -- the weekly SP ranking filtered to free agents in your league, best rank first (rank takes precedence; Statcast score is a secondary column).
 - **Best available hitters (PitcherList Top 150)** -- the weekly hitter ranking filtered to free agents in your league, best rank first.
 - **Top available hitters (FantasyPros)** -- best available batters by today's FantasyPros VBR.
 
@@ -161,6 +163,7 @@ data/{YYYY-MM-DD}/
     sp_streamers.csv        # SP streamer tiers by day (Auto/Probably/Questionable/Do Not Start)
     waiver_adds.csv         # "Top Priority Players to Add"
     top_hitters.csv         # Weekly Top 150 hitters (rank, team, position, tier)
+    top_pitchers.csv        # Weekly Top 100 starting pitchers (rank, team, tier, badges)
   projections_fpros/
     hitters.csv             # FantasyPros daily hitter projections
     pitchers.csv            # FantasyPros daily pitcher projections (pitcher cross-check)

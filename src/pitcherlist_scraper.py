@@ -27,6 +27,7 @@ BASE = "https://pitcherlist.com"
 STREAMER_CATEGORY = f"{BASE}/category/fantasy/starting-pitchers/sp-streamers/"
 WAIVER_CATEGORY = f"{BASE}/category/fantasy/waiver-wire/"
 HITTER_LIST_CATEGORY = f"{BASE}/category/fantasy/hitters-fantasy/hitter-list/"
+SP_LIST_CATEGORY = f"{BASE}/category/fantasy/starting-pitchers/the-list/"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -44,10 +45,11 @@ TIER_KEYS = {
 STREAMER_COLS = ["day", "tier", "tier_score", "name", "opp", "matchup", "rostership", "source_url"]
 WAIVER_COLS = ["name", "team", "position", "rostership", "note", "source_url"]
 TOP_HITTER_COLS = ["rank", "name", "team", "position", "tier", "change", "week", "source_url"]
+TOP_PITCHER_COLS = ["rank", "name", "team", "badges", "tier", "change", "week", "source_url"]
 
 _DAY_RE = re.compile(r"(\d{1,2})/(\d{1,2})\s+Starting Pitcher Streamer Rankings", re.I)
 _OPP_RE = re.compile(r"(@|vs\.?)\s*([A-Z]{2,3})", re.I)
-_HITTER_TIER_RE = re.compile(r"\s+T(\d+)\s*$")
+_RANK_TIER_RE = re.compile(r"\s+T(\d+)\s*$")  # 'T<n>' suffix marks the first name of a tier
 
 
 def _get_soup(url):
@@ -238,74 +240,81 @@ def scrape_waiver_adds(game_date=None):
 
 
 # --------------------------------------------------------------------------
-# Top 150 Hitters (weekly rest-of-season hitter value ranking)
+# Weekly rest-of-season value rankings (Top 150 Hitters / Top 100 Starters)
 # --------------------------------------------------------------------------
+# Both are the same table shape: Rank, Name, Team, <extra>, Change -- where the
+# first name of each tier carries a 'T<n>' suffix. Parsed by a shared helper.
 
-def scrape_top_hitters(game_date=None):
-    """
-    Scrape the latest weekly "Top 150 Hitters" ranking.
-
-    Returns a DataFrame with columns TOP_HITTER_COLS. `tier` is PitcherList's
-    tier bucket (the ranking marks where each tier starts with a 'T<n>' suffix
-    on the first name of the tier).
-    """
-    url = _find_latest_post(HITTER_LIST_CATEGORY, "top-150-hitters")
+def _scrape_ranking(category, slug, name_header, extra_col, cols, label):
+    """Scrape a weekly Rank/Name/Team/<extra>/Change ranking table with 'T<n>' tiers."""
+    url = _find_latest_post(category, slug)
     if not url:
-        print("  WARNING: could not find a PitcherList top-150-hitters post")
-        return pd.DataFrame(columns=TOP_HITTER_COLS)
+        print(f"  WARNING: could not find a PitcherList {slug} post")
+        return pd.DataFrame(columns=cols)
 
     week_m = re.search(r"week-(\d+)", url)
     week = int(week_m.group(1)) if week_m else None
 
     soup = _get_soup(url)
     article = soup.find("article") or soup
-
     table = None
     for t in article.find_all("table"):
         header = [c.get_text(strip=True) for c in t.find_all("tr")[0].find_all(["th", "td"])]
-        if header[:2] == ["Rank", "Hitter"]:
+        if header[:2] == ["Rank", name_header]:
             table = t
             break
     if table is None:
-        print(f"  WARNING: no Top 150 hitter table found at {url}")
-        return pd.DataFrame(columns=TOP_HITTER_COLS)
+        print(f"  WARNING: no {label} table found at {url}")
+        return pd.DataFrame(columns=cols)
 
     rows = []
     current_tier = None
     for tr in table.find_all("tr")[1:]:
         cells = [c.get_text(" ", strip=True) for c in tr.find_all(["th", "td"])]
-        if len(cells) < 4:
+        if len(cells) < 3:
             continue
-        rank, hitter, team, position = cells[0], cells[1], cells[2], cells[3]
+        rank, name, team = cells[0], cells[1], cells[2]
+        extra = cells[3] if len(cells) > 3 else ""
         change = cells[4] if len(cells) > 4 else ""
 
-        m = _HITTER_TIER_RE.search(hitter)
-        if m:  # a 'T<n>' suffix marks the first hitter of a new tier
+        m = _RANK_TIER_RE.search(name)
+        if m:  # a 'T<n>' suffix marks the first name of a new tier
             current_tier = int(m.group(1))
-            hitter = _HITTER_TIER_RE.sub("", hitter).strip()
+            name = _RANK_TIER_RE.sub("", name).strip()
 
-        if not rank.isdigit() or not hitter:
+        if not rank.isdigit() or not name:
             continue
 
         rows.append({
-            "rank": int(rank),
-            "name": hitter,
-            "team": team,
-            "position": position,
-            "tier": current_tier,
-            "change": change,
-            "week": week,
-            "source_url": url,
+            "rank": int(rank), "name": name, "team": team,
+            extra_col: extra, "tier": current_tier,
+            "change": change, "week": week, "source_url": url,
         })
 
-    df = pd.DataFrame(rows, columns=TOP_HITTER_COLS)
+    df = pd.DataFrame(rows, columns=cols)
     if df.empty:
-        print(f"  WARNING: parsed 0 hitters from {url} (layout may have changed)")
+        print(f"  WARNING: parsed 0 rows from {url} (layout may have changed)")
     return df
 
 
+def scrape_top_hitters(game_date=None):
+    """Scrape the latest weekly "Top 150 Hitters" ranking (DataFrame, cols TOP_HITTER_COLS)."""
+    return _scrape_ranking(HITTER_LIST_CATEGORY, "top-150-hitters", "Hitter",
+                           "position", TOP_HITTER_COLS, "Top 150 hitter")
+
+
+def scrape_top_pitchers(game_date=None):
+    """Scrape the latest weekly "Top 100 Starting Pitchers" ranking (cols TOP_PITCHER_COLS)."""
+    return _scrape_ranking(SP_LIST_CATEGORY, "top-100-starting-pitchers", "Pitcher",
+                           "badges", TOP_PITCHER_COLS, "Top 100 starting pitcher")
+
+
+def _week_of(df):
+    return int(df["week"].iloc[0]) if not df.empty and pd.notna(df["week"].iloc[0]) else "?"
+
+
 def scrape_pitcherlist_daily(game_date=None):
-    """Fetch all PitcherList columns. Returns (streamers_df, waiver_adds_df, top_hitters_df)."""
+    """Fetch all PitcherList columns. Returns (streamers, waiver, top_hitters, top_pitchers)."""
     print("  Fetching PitcherList SP streamer ranks...")
     streamers = scrape_streamer_ranks(game_date)
     days = sorted(streamers["day"].dropna().unique()) if not streamers.empty else []
@@ -317,14 +326,17 @@ def scrape_pitcherlist_daily(game_date=None):
 
     print("  Fetching PitcherList Top 150 Hitters...")
     top_hitters = scrape_top_hitters(game_date)
-    wk = int(top_hitters["week"].iloc[0]) if not top_hitters.empty and pd.notna(top_hitters["week"].iloc[0]) else "?"
-    print(f"  Got {len(top_hitters)} hitters (week {wk})")
+    print(f"  Got {len(top_hitters)} hitters (week {_week_of(top_hitters)})")
 
-    return streamers, waiver, top_hitters
+    print("  Fetching PitcherList Top 100 Starting Pitchers...")
+    top_pitchers = scrape_top_pitchers(game_date)
+    print(f"  Got {len(top_pitchers)} starting pitchers (week {_week_of(top_pitchers)})")
+
+    return streamers, waiver, top_hitters, top_pitchers
 
 
 if __name__ == "__main__":
-    streamers, waiver, top_hitters = scrape_pitcherlist_daily()
+    streamers, waiver, top_hitters, top_pitchers = scrape_pitcherlist_daily()
 
     print(f"\n=== SP Streamer Ranks ({len(streamers)}) ===")
     if not streamers.empty:
@@ -340,7 +352,10 @@ if __name__ == "__main__":
         rost = f"{r['rostership']:.0f}%" if pd.notna(r["rostership"]) else "-"
         print(f"    {r['name']:<22} ({r['team']}) {r['position']:<5} rost {rost}")
 
-    wk = int(top_hitters["week"].iloc[0]) if not top_hitters.empty else "?"
-    print(f"\n=== Top 150 Hitters - Week {wk} (first 15) ===")
+    print(f"\n=== Top 150 Hitters - Week {_week_of(top_hitters)} (first 15) ===")
     for _, r in top_hitters.head(15).iterrows():
         print(f"    #{r['rank']:<4} T{r['tier']:<3} {r['name']:<24} {r['team']:<4} {r['position']}")
+
+    print(f"\n=== Top 100 Starting Pitchers - Week {_week_of(top_pitchers)} (first 15) ===")
+    for _, r in top_pitchers.head(15).iterrows():
+        print(f"    #{r['rank']:<4} T{r['tier']:<3} {r['name']:<24} {r['team']:<4}")
