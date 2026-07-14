@@ -7,8 +7,10 @@ Two columns, driven by people who actually watch baseball:
      Auto-Start / Probably Start / Questionable Start / Do Not Start.
      This is the PRIMARY pitcher start/sit + streaming signal.
 
-  2. Waiver Wire Adds -> "Top Priority Players to Add" -- a short curated
+  2. Waiver Wire -> "Top Priority Players to Add" -- a short curated
      pickup list (hitters and pitchers) with team, position, rostership %.
+     The column ships under two slugs ('waiver-wire-adds-*', now mostly
+     'waiver-wire-picks-*') and two markups; both are handled.
 
 Each recurring column has a stable category page that lists the newest daily
 post, so we discover today's URL rather than guessing the date-based slug.
@@ -51,6 +53,31 @@ _DAY_RE = re.compile(r"(\d{1,2})/(\d{1,2})\s+Starting Pitcher Streamer Rankings"
 _OPP_RE = re.compile(r"(@|vs\.?)\s*([A-Z]{2,3})", re.I)
 _RANK_TIER_RE = re.compile(r"\s+T(\d+)\s*$")  # 'T<n>' suffix marks the first name of a tier
 
+# The waiver column has been published under both slugs; take whichever is newest.
+_WAIVER_SLUG_RE = r"waiver-wire-(?:adds|picks)-\d"
+_WAIVER_DATE_RE = re.compile(r"waiver-wire-(?:adds|picks)-(\d{1,2})-(\d{1,2})")
+
+# A top-priority add's bold header line, in either of the two layouts PL uses:
+#   'Caleb Durbin (BOS), INF - 41% Rostership'      (older 'adds' posts)
+#   'A.J. Ewing (NYM) - 2B, OF (Yahoo - 22%)'       (current 'picks' posts)
+# Section headers ('Streaming Pitchers') are bold too, but never match this.
+#   'Jared Jones , RHP (PIT) - 27% Rostership'      (current waiver-wire posts)
+#
+# The position moved: it used to trail the team, now it leads it. Both layouts are
+# accepted, and a position must start with a letter -- otherwise the trailing form
+# happily matches the '27' of '27% Rostership' and files it as the player's position.
+#
+# A position must contain at least one LETTER -- the lookahead is what stops the
+# trailing form from matching the '27' of '27% Rostership'. It can still start with a
+# digit, because '3B' and '2B' do.
+_POS = r"(?=[A-Z0-9/]*[A-Z])[A-Z0-9/]+"
+_ADD_RE = re.compile(
+    r"^(?P<name>[^(,]+?)\s*"
+    rf"(?:,\s*(?P<pos_pre>{_POS}(?:\s*,\s*{_POS})*)\s*)?"
+    r"\((?P<team>[A-Z]{2,3})\)"
+    rf"(?:\s*[,–—-]\s*(?P<pos_post>{_POS}(?:,\s*{_POS})*))?"
+)
+
 
 def _get_soup(url):
     resp = requests.get(url, headers=HEADERS, timeout=30)
@@ -59,12 +86,15 @@ def _get_soup(url):
     return BeautifulSoup(resp.text, "html.parser")
 
 
-def _find_latest_post(category_url, slug_contains):
-    """Return the newest article URL under a category whose slug contains a marker."""
+def _find_latest_post(category_url, slug_pattern):
+    """Return the newest article URL under a category whose slug matches a regex.
+
+    Category archives list newest-first, so the first match is today's post.
+    """
     soup = _get_soup(category_url)
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        if slug_contains in href:
+        if re.search(slug_pattern, href):
             return href if href.startswith("http") else BASE + href
     return None
 
@@ -173,12 +203,32 @@ def scrape_streamer_ranks(game_date=None):
 # Waiver Wire Adds -> "Top Priority Players to Add"
 # --------------------------------------------------------------------------
 
-def _looks_like_section_header(p):
-    """A paragraph that is just a bold title (its whole text is one <strong>)."""
-    strong = p.find("strong")
-    if not strong:
-        return False
-    return strong.get_text(" ", strip=True) == p.get_text(" ", strip=True)
+def _bold_only_text(p):
+    """The paragraph's text if the whole paragraph is bold (<strong> or <b>), else None.
+
+    Both player headers and section headers are bold; _ADD_RE tells them apart.
+    Scouting notes are plain prose, so they fall through to None.
+    """
+    text = p.get_text(" ", strip=True)
+    if not text:
+        return None
+    for tag in ("strong", "b"):
+        bold = p.find(tag)
+        if bold and bold.get_text(" ", strip=True) == text:
+            return text
+    return None
+
+
+def _warn_if_stale(url, game_date):
+    """The column skips days; say so rather than silently reporting an old post."""
+    m = _WAIVER_DATE_RE.search(url)
+    if not m:
+        return
+    want = date.fromisoformat(game_date)
+    post_md = (int(m.group(1)), int(m.group(2)))
+    if post_md != (want.month, want.day):
+        print(f"  NOTE: newest waiver post is {post_md[0]}/{post_md[1]}, "
+              f"not {want.month}/{want.day} -- no post today yet ({url})")
 
 
 def scrape_waiver_adds(game_date=None):
@@ -187,15 +237,19 @@ def scrape_waiver_adds(game_date=None):
 
     Returns a DataFrame with columns WAIVER_COLS (hitters and pitchers mixed).
     """
-    url = _find_latest_post(WAIVER_CATEGORY, "waiver-wire-adds")
+    if game_date is None:
+        game_date = date.today().isoformat()
+
+    url = _find_latest_post(WAIVER_CATEGORY, _WAIVER_SLUG_RE)
     if not url:
         print("  WARNING: could not find a PitcherList waiver-wire post")
         return pd.DataFrame(columns=WAIVER_COLS)
+    _warn_if_stale(url, game_date)
 
     soup = _get_soup(url)
 
     marker = next(
-        (s for s in soup.find_all("strong")
+        (s for s in soup.find_all(["strong", "b"])
          if "Top Priority Players to Add" in s.get_text()),
         None,
     )
@@ -205,33 +259,25 @@ def scrape_waiver_adds(game_date=None):
 
     header_p = marker.find_parent("p") or marker
     rows = []
-    following = header_p.find_all_next("p")
-    for i, p in enumerate(following):
-        if _looks_like_section_header(p):
-            break  # reached the next section (e.g. "Yahoo and ESPN Most Added Players")
-
-        link = p.find("a", href=re.compile(r"/player/"))
-        text = p.get_text(" ", strip=True)
-        team_m = re.search(r"\(([A-Z]{2,3})\)", text)
-        if not link or not team_m or "Rostership" not in text:
-            continue  # prose / intro paragraph
-
-        pos_m = re.search(r"\),\s*([A-Za-z0-9/]+)", text)
-        # scouting note = the next paragraph, if it's prose (no player link)
-        note = ""
-        if i + 1 < len(following):
-            nxt = following[i + 1]
-            if not nxt.find("a", href=re.compile(r"/player/")) and not _looks_like_section_header(nxt):
-                note = nxt.get_text(" ", strip=True)
-
-        rows.append({
-            "name": link.get_text(strip=True),
-            "team": team_m.group(1),
-            "position": pos_m.group(1) if pos_m else "",
-            "rostership": _parse_pct(text),
-            "note": note,
-            "source_url": url,
-        })
+    # Section runs header -> note -> header -> note ... until the next bold
+    # section title ("Yahoo and ESPN Most Added Players"), which won't match _ADD_RE.
+    for p in header_p.find_all_next("p"):
+        bold = _bold_only_text(p)
+        if bold is not None:
+            m = _ADD_RE.match(bold)
+            if not m or "%" not in bold:
+                break
+            pos = m.group("pos_pre") or m.group("pos_post") or ""
+            rows.append({
+                "name": m.group("name").strip(),
+                "team": m.group("team"),
+                "position": re.sub(r",\s*", "/", pos),
+                "rostership": _parse_pct(bold),
+                "note": "",
+                "source_url": url,
+            })
+        elif rows and not rows[-1]["note"]:
+            rows[-1]["note"] = p.get_text(" ", strip=True)
 
     df = pd.DataFrame(rows, columns=WAIVER_COLS)
     if df.empty:

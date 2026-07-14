@@ -10,16 +10,54 @@ NS = {'y': 'http://fantasysports.yahooapis.com/fantasy/v2/base.rng'}
 BASE_URL = "https://fantasysports.yahooapis.com/fantasy/v2"
 
 
+class YahooWriteError(Exception):
+    """A transaction was rejected by Yahoo (bad roster slot, failed waiver claim, read-only token...)."""
+
+
+def _extract_yahoo_error(body):
+    """Pull the human-readable message out of a Yahoo error response."""
+    try:
+        root = ET.fromstring(body)
+        desc = root.findtext('.//{http://yahoo.com}description')
+        if desc:
+            return desc
+    except ET.ParseError:
+        pass
+    return (body or '').strip()[:500]
+
+
 class YahooClient:
     def __init__(self):
         self.oauth = OAuth2(None, None, from_file='oauth_token.json')
 
+    def _ensure_token(self):
+        """Refresh the access token if it has expired."""
+        if not self.oauth.token_is_valid():
+            self.oauth.refresh_access_token()
+
     def _get(self, url):
         """Make authenticated GET request and return parsed XML root."""
+        self._ensure_token()
         response = self.oauth.session.get(url)
         if response.status_code != 200:
             raise Exception(f"Yahoo API error {response.status_code}: {url}\n{response.text[:500]}")
         return ET.fromstring(response.content)
+
+    def _post(self, url, xml_body):
+        """Make an authenticated POST of an XML payload. Returns the parsed response root."""
+        self._ensure_token()
+        response = self.oauth.session.post(
+            url,
+            data=xml_body.encode('utf-8'),
+            headers={'Content-Type': 'application/xml'},
+        )
+        # Yahoo answers 201 Created on an accepted transaction.
+        if response.status_code not in (200, 201):
+            raise YahooWriteError(
+                f"Yahoo rejected the transaction (HTTP {response.status_code}).\n"
+                f"{_extract_yahoo_error(response.text)}"
+            )
+        return ET.fromstring(response.content) if response.content else None
 
     def _parse_player(self, player_elem):
         """Parse a single player XML element into a dict."""
@@ -178,6 +216,98 @@ class YahooClient:
 
         return settings
 
-    def execute_transaction(self, league_id, add_player, drop_player):
-        # Stub: Execute add/drop transaction via Yahoo API
-        pass
+    def get_ownership(self, league_id, player_keys):
+        """
+        Map player_key -> ownership type ('freeagents', 'waivers', 'team').
+
+        An add for a player on waivers must be filed as a waiver claim, not a
+        straight add, so callers need this before building a transaction.
+        """
+        if not player_keys:
+            return {}
+
+        ownership = {}
+        for i in range(0, len(player_keys), 25):
+            keys_str = ','.join(player_keys[i:i + 25])
+            root = self._get(f"{BASE_URL}/league/{league_id}/players;player_keys={keys_str}/ownership")
+            for player in root.findall('.//y:player', NS):
+                key = player.findtext('y:player_key', '', NS)
+                own = player.find('.//y:ownership', NS)
+                if key and own is not None:
+                    ownership[key] = own.findtext('y:ownership_type', '', NS)
+        return ownership
+
+    def execute_transaction(self, league_id, add_player_key, drop_player_key=None,
+                            team_key=None, faab_bid=None):
+        """
+        Execute an add, a drop, or a paired add/drop against Yahoo.
+
+        Adds are routed automatically: a player sitting on waivers is filed as a
+        waiver claim (with `faab_bid` if the league uses FAAB), anyone else as a
+        straight free-agent add.
+
+        Returns a dict describing what was filed. Raises YahooWriteError if Yahoo
+        refuses it -- most commonly because the app is registered read-only.
+        """
+        if not team_key:
+            team_key = self.get_team_key(league_id)
+
+        on_waivers = False
+        if add_player_key:
+            on_waivers = self.get_ownership(league_id, [add_player_key]).get(add_player_key) == 'waivers'
+
+        if add_player_key and drop_player_key:
+            txn_type = 'waiver' if on_waivers else 'add/drop'
+        elif add_player_key:
+            txn_type = 'waiver' if on_waivers else 'add'
+        elif drop_player_key:
+            txn_type = 'drop'
+        else:
+            raise ValueError("execute_transaction needs an add, a drop, or both")
+
+        players = []
+        if add_player_key:
+            players.append(
+                f"<player>"
+                f"<player_key>{add_player_key}</player_key>"
+                f"<transaction_data>"
+                f"<type>add</type>"
+                f"<destination_team_key>{team_key}</destination_team_key>"
+                f"</transaction_data>"
+                f"</player>"
+            )
+        if drop_player_key:
+            players.append(
+                f"<player>"
+                f"<player_key>{drop_player_key}</player_key>"
+                f"<transaction_data>"
+                f"<type>drop</type>"
+                f"<source_team_key>{team_key}</source_team_key>"
+                f"</transaction_data>"
+                f"</player>"
+            )
+
+        # A single-player transaction wraps the player directly; a pair wraps them in <players>.
+        players_xml = f"<players>{''.join(players)}</players>" if len(players) > 1 else players[0]
+        bid_xml = f"<faab_bid>{int(faab_bid)}</faab_bid>" if (txn_type == 'waiver' and faab_bid is not None) else ''
+
+        body = (
+            '<?xml version="1.0"?>'
+            '<fantasy_content>'
+            '<transaction>'
+            f'<type>{txn_type}</type>'
+            f'{bid_xml}'
+            f'{players_xml}'
+            '</transaction>'
+            '</fantasy_content>'
+        )
+
+        self._post(f"{BASE_URL}/league/{league_id}/transactions", body)
+
+        return {
+            'type': txn_type,
+            'add': add_player_key,
+            'drop': drop_player_key,
+            'faab_bid': faab_bid if txn_type == 'waiver' else None,
+            'pending': txn_type == 'waiver',  # waiver claims clear overnight, they aren't instant
+        }

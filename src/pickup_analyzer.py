@@ -104,8 +104,11 @@ def analyze_pickups(data_dir=None):
 
     roster = pd.read_csv(os.path.join(data_dir, 'yahoo', 'roster.csv'))
     free_agents = pd.read_csv(os.path.join(data_dir, 'yahoo', 'free_agents.csv'))
-    fp_hitters = pd.read_csv(os.path.join(data_dir, 'projections_fpros', 'hitters.csv'))
-    fp_pitchers = pd.read_csv(os.path.join(data_dir, 'projections_fpros', 'pitchers.csv'))
+    # FantasyPros publishes no daily projections on days with no games (the All-Star
+    # break, for one), so an empty projection set is normal, not a failure. _match
+    # returns None against an empty frame and the sections degrade on their own.
+    fp_hitters = _safe_read(os.path.join(data_dir, 'projections_fpros', 'hitters.csv'))
+    fp_pitchers = _safe_read(os.path.join(data_dir, 'projections_fpros', 'pitchers.csv'))
     games = _safe_read(os.path.join(data_dir, 'mlb', 'games.csv'))
     streamers = _safe_read(os.path.join(data_dir, 'pitcherlist', 'sp_streamers.csv'))
     waiver = _safe_read(os.path.join(data_dir, 'pitcherlist', 'waiver_adds.csv'))
@@ -194,7 +197,11 @@ def _next_day(game_date):
 
 def _safe_read(path):
     if os.path.exists(path):
-        return pd.read_csv(path)
+        try:
+            return pd.read_csv(path)
+        except pd.errors.EmptyDataError:
+            # A scraper that found nothing writes a header-less empty file.
+            return pd.DataFrame()
     return pd.DataFrame()
 
 

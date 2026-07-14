@@ -3,3 +3,4 @@ yahoo_oauth
 pandas
 numpy
 python-dotenv
+flask

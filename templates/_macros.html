@@ -1,0 +1,181 @@
+{# Percentile meter. Higher is always better (the scraper orients every metric that
+   way), so a bar is never inverted. The number rides alongside the bar so the value
+   never depends on color alone. #}
+{% macro pct(value, strong=false) %}
+  {% if value is none %}
+    <span class="pct-none">--</span>
+  {% else %}
+    <div class="pct">
+      <div class="pct-track">
+        <div class="pct-fill" style="width: {{ value }}%; background: {{ value | pct_color }};"></div>
+      </div>
+      <span class="pct-val {{ 'strong' if strong }}">{{ value }}</span>
+    </div>
+  {% endif %}
+{% endmacro %}
+
+{# A player's name, linking to their Statcast card when we have percentiles for them. #}
+{% macro player_link(row) %}
+  {% if row.savant_id and row.kind %}
+    <a class="player name" href="/player/{{ row.kind }}/{{ row.savant_id }}">{{ row.name }}</a>
+  {% else %}
+    <span class="name">{{ row.name }}</span>
+  {% endif %}
+  <span class="dim">{{ row.team }}</span>
+{% endmacro %}
+
+{# Ownership %, or a bare dash -- never "--%", which reads as a real value. #}
+{% macro own_pct(value) %}
+  {%- if value is none %}<span class="dim">&mdash;</span>{% else %}{{ value }}%{% endif -%}
+{% endmacro %}
+
+{% macro status_pill(status) %}
+  <span class="pill {{ status }}">
+    {%- if status == 'MINE' %}Rostered
+    {%- elif status == 'FA' %}Available
+    {%- elif status == 'IL' %}Yours (IL)
+    {%- else %}Taken
+    {%- endif -%}
+  </span>
+{% endmacro %}
+
+{# Status filter. Scoped to the tab it sits in, so it covers every table in that tab
+   (Statcast has two: hitters and pitchers). "Rostered" means yours -- IL included,
+   since an injured player is still on your team. #}
+{% macro filter_bar() %}
+  <div class="filters">
+    <span class="dim">Show</span>
+    <div class="seg filter">
+      <button class="on" data-filter="ALL">All</button>
+      <button data-filter="MINE">Rostered</button>
+      <button data-filter="FA">Available</button>
+      <button data-filter="TAKEN">Taken</button>
+    </div>
+    <span class="dim count"></span>
+  </div>
+{% endmacro %}
+
+{% macro sc_legend() %}
+  <div class="legend">
+    <span><b>Statcast percentile</b> -- higher is better for every metric shown</span>
+    <span><i class="swatch" style="background:#3987e5"></i>poor</span>
+    <span><i class="swatch" style="background:#898781"></i>average</span>
+    <span><i class="swatch" style="background:#e66767"></i>elite</span>
+  </div>
+{% endmacro %}
+
+{# One Moves section. Each source keeps its own table and its own columns, because the
+   detail that justifies the add differs: a curated priority add earns its place on the
+   scouting note, a streamer on its tier and matchup. #}
+{% macro move_table(section) %}
+  {% set is_priority = section.key == 'top_priority' %}
+  {% set is_streamer = section.key.startswith('streaming_pitchers') %}
+  <table data-sortable>
+    <thead><tr>
+      <th class="sortable">Player</th>
+      <th class="sortable">Pos</th>
+      <th class="sortable" data-type="num">Statcast</th>
+      <th class="sortable">Status</th>
+      {% if is_streamer %}<th class="sortable">Tier</th><th class="sortable">Opp</th>{% endif %}
+      {% if is_priority %}<th class="sortable num" data-type="num">Rostered</th>{% endif %}
+      {% if is_priority %}<th>Note</th>{% endif %}
+      <th>Costs you</th>
+      <th></th>
+    </tr></thead>
+    <tbody>
+    {% for x in section.moves %}
+      <tr data-status="{{ x.status }}">
+        <td>{{ player_link(x) }}</td>
+        <td class="dim">{{ x.position }}</td>
+        <td data-sort="{{ x.score if x.score is not none else -1 }}">{{ pct(x.score) }}</td>
+        <td>{{ status_pill(x.status) }}</td>
+        {% if is_streamer %}
+          <td class="dim">{{ x.tier }}</td>
+          <td class="dim">{{ x.opp }}</td>
+        {% endif %}
+        {% if is_priority %}
+          <td class="num dim">{{ x.rostership }}%</td>
+          <td class="note">{{ x.note }}</td>
+        {% endif %}
+        {# Red is the cost of a move. "Nobody" costs nothing, so it must not wear it. #}
+        {% if x.drop_name %}
+          <td class="drop">{{ x.drop_name }}</td>
+        {% else %}
+          <td class="dim">nobody &mdash; open spot</td>
+        {% endif %}
+        <td>
+          <button class="primary approve"
+                  data-add="{{ x.player_key }}" data-add-name="{{ x.name }}"
+                  data-drop="{{ x.drop_key or '' }}" data-drop-name="{{ x.drop_name or '' }}"
+                  {% if not x.approvable %}disabled{% endif %}>Approve</button>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% endmacro %}
+
+{# PitcherList weekly ranking table. `extra` picks the source-specific column:
+   pitchers carry badges, hitters carry a position. #}
+{% macro rank_table(rows, extra) %}
+  {% if not rows %}
+    <div class="banner">No ranking published for this week.</div>
+  {% else %}
+  <table data-sortable>
+    <thead><tr>
+      <th class="sortable num" data-type="num">#</th>
+      <th class="sortable">Player</th>
+      <th class="sortable">Tier</th>
+      <th class="sortable">{{ 'Badges' if extra == 'badges' else 'Pos' }}</th>
+      <th class="sortable" data-type="num">Statcast</th>
+      <th class="sortable">Status</th>
+      <th class="sortable num" data-type="num">Owned</th>
+    </tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr data-status="{{ r.status }}">
+        <td class="num dim">{{ r.rank }}</td>
+        <td>{{ player_link(r) }}</td>
+        <td class="dim">{{ r.tier }}</td>
+        <td class="dim">{{ r.badges if extra == 'badges' else r.position }}</td>
+        <td data-sort="{{ r.score if r.score is not none else -1 }}">{{ pct(r.score) }}</td>
+        <td>{{ status_pill(r.status) }}</td>
+        <td class="num dim">{{ own_pct(r.own) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+{% endmacro %}
+
+{# Statcast leaderboard: composite score as a bar, then every percentile behind it.
+   The per-metric cells are colored numbers rather than bars -- a full grid of bars
+   at this density stops being readable and starts being wallpaper. #}
+{% macro sc_table(rows, cols) %}
+  <table data-sortable>
+    <thead><tr>
+      <th class="sortable">Player</th>
+      <th class="sortable" data-type="num">SC score</th>
+      <th class="sortable">Status</th>
+      {% for key, label in cols %}
+        <th class="sortable num" data-type="num" title="{{ label }}">{{ key }}</th>
+      {% endfor %}
+    </tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr data-status="{{ r.status }}">
+        <td>{{ player_link(r) }}</td>
+        <td data-sort="{{ r.score }}">{{ pct(r.score, strong=true) }}</td>
+        <td>{{ status_pill(r.status) }}</td>
+        {% for key, label in cols %}
+          {% set v = r.metrics[key] %}
+          <td class="num" data-sort="{{ v if v is not none else -1 }}"
+              style="color: {{ v | pct_color if v is not none else 'var(--muted)' }}; font-weight: 600;">
+            {{ v if v is not none else '--' }}
+          </td>
+        {% endfor %}
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% endmacro %}

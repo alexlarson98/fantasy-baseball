@@ -1,7 +1,10 @@
 .env
 oauth_token.json
+oauth_token.json.bak
 secrets.json
+chopping_block.json
 venv/
+.venv/
 __pycache__/
 *.pyc
 *.pyo

@@ -1,0 +1,243 @@
+{% import '_macros.html' as m %}
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Fantasy Baseball Assistant</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>⚾ Fantasy Baseball Assistant</h1>
+  {% if not empty %}<span class="dim">{{ data_dir }}</span>{% endif %}
+  <span class="spacer"></span>
+  <button id="refresh" class="primary">Refresh data</button>
+  <button id="quit" title="Stop the server">Quit</button>
+</header>
+
+{% if empty %}
+  <main>
+    {% if load_error %}<div class="banner warn">{{ load_error }}</div>{% endif %}
+    <div class="banner">
+      {% if running %}Pulling fresh data now -- this page will reload itself when it lands.
+      {% else %}No complete day of data yet. Hit Refresh data.{% endif %}
+    </div>
+    <pre id="log"></pre>
+  </main>
+{% else %}
+
+<nav>
+  <button class="on" data-tab="moves">Moves</button>
+  <button data-tab="rankings">Rankings</button>
+  <button data-tab="streamers">Streamers</button>
+  <button data-tab="statcast">Statcast</button>
+  <button data-tab="available">Available</button>
+  <button data-tab="roster">Roster</button>
+  <button data-tab="report">Report</button>
+</nav>
+
+<main>
+  <pre id="log"></pre>
+
+  {% if stale %}
+    <div class="banner warn">This data is from {{ data_dir }}, not today. Hit Refresh data before acting on it.</div>
+  {% endif %}
+
+  <!-- ================= MOVES ================= -->
+  <section class="tab on" id="moves">
+    {% if no_projections %}
+      <div class="banner warn">No FantasyPros daily projections for this date -- they publish none when
+        there are no games (All-Star break, off-days). Everything else below is season-to-date and still live:
+        PitcherList tiers and rankings, Statcast percentiles, and league availability.</div>
+    {% endif %}
+
+    <div class="banner">
+      <b>Team space {{ space.occupied }}/{{ space.capacity }}</b> &nbsp;·&nbsp;
+      IL {{ space.il_occupied }}/{{ space.il_capacity }}
+      <span class="dim">(IL sits outside team space -- cutting an IL player frees an IL slot, not one an add can use)</span>
+    </div>
+
+    {% if space.open_spots > 0 %}
+      <div class="banner">You have <b>{{ space.open_spots }}</b> open spot{{ '' if space.open_spots == 1 else 's' }},
+        so these adds cost you nobody. No drop needed.</div>
+    {% elif drop %}
+      <div class="banner">Roster is full. Next player cut: <b class="drop">{{ drop.name }}</b>.
+        Every add below drops them.</div>
+    {% else %}
+      <div class="banner warn">Roster is full and nobody on your chopping block can pay for an add.
+        {% if block_order %}Everyone you've marked is on the IL -- cutting them frees an IL slot, not team space.{% endif %}
+        Mark an expendable <b>non-IL</b> player on the Roster tab.</div>
+    {% endif %}
+
+    {% for section in move_sections %}
+      <h2>{{ section.label }}</h2>
+      {{ m.move_table(section) }}
+    {% else %}
+      <div class="banner">No addable players surfaced for this date.</div>
+    {% endfor %}
+  </section>
+
+  <!-- ================= RANKINGS ================= -->
+  <section class="tab" id="rankings">
+    <div class="banner">PitcherList's weekly rest-of-season rankings. These are <b>not</b> tied to today's
+      slate -- they stay meaningful on an off-day.</div>
+
+    <div class="seg" data-sub="rank">
+      <button class="on" data-target="rank-sp">Top 100 SP{% if sp_week %} · wk {{ sp_week }}{% endif %}</button>
+      <button data-target="rank-hit">Top 150 Hitters{% if hit_week %} · wk {{ hit_week }}{% endif %}</button>
+    </div>
+    {{ m.filter_bar() }}
+    {{ m.sc_legend() }}
+
+    <div class="sub on" id="rank-sp">{{ m.rank_table(sp_ranks, 'badges') }}</div>
+    <div class="sub" id="rank-hit">{{ m.rank_table(hit_ranks, 'position') }}</div>
+  </section>
+
+  <!-- ================= STREAMERS ================= -->
+  <section class="tab" id="streamers">
+    {% if waiver_adds or streamer_days %}{{ m.filter_bar() }}{% endif %}
+
+    {% if waiver_adds %}
+      <h3>PitcherList top priority adds</h3>
+      <table data-sortable>
+        <thead><tr>
+          <th class="sortable">Player</th><th class="sortable">Pos</th>
+          <th class="sortable" data-type="num">Statcast</th>
+          <th class="sortable">Status</th>
+          <th class="sortable num" data-type="num">Rostered</th>
+          <th>Note</th>
+        </tr></thead>
+        <tbody>
+        {% for w in waiver_adds %}
+          <tr data-status="{{ w.status }}">
+            <td>{{ m.player_link(w) }}</td>
+            <td class="dim">{{ w.position }}</td>
+            <td data-sort="{{ w.score if w.score is not none else -1 }}">{{ m.pct(w.score) }}</td>
+            <td>{{ m.status_pill(w.status) }}</td>
+            <td class="num dim">{{ w.rostership }}%</td>
+            <td class="note">{{ w.note }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    {% if not streamer_days %}
+      <div class="banner">No streamer board published for this date.</div>
+    {% endif %}
+    {% for d in streamer_days %}
+      <h3>Starting {{ d.day }}</h3>
+      <table data-sortable>
+        <thead><tr>
+          <th class="sortable">Pitcher</th><th class="sortable">Tier</th>
+          <th class="sortable">Opp</th>
+          <th class="sortable" data-type="num">Statcast</th>
+          <th class="sortable">Status</th><th class="sortable num" data-type="num">Rostered</th>
+        </tr></thead>
+        <tbody>
+        {% for p in d.pitchers %}
+          <tr data-status="{{ p.status }}">
+            <td>{{ m.player_link(p) }}</td>
+            <td data-sort="{{ p.tier_score }}">{{ p.tier }}</td>
+            <td class="dim">{{ p.opp }}</td>
+            <td data-sort="{{ p.score if p.score is not none else -1 }}">{{ m.pct(p.score) }}</td>
+            <td>{{ m.status_pill(p.status) }}</td>
+            <td class="num dim">{{ p.rostership }}%</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endfor %}
+  </section>
+
+  <!-- ================= STATCAST ================= -->
+  <section class="tab" id="statcast">
+    <div class="banner">Composite <b>SC</b> score (0-100) plus the percentiles behind it.
+      Click any player for their full card.</div>
+
+    <div class="seg" data-sub="sc">
+      <button class="on" data-target="sc-hit">Hitters</button>
+      <button data-target="sc-pit">Pitchers</button>
+    </div>
+    {{ m.filter_bar() }}
+    {{ m.sc_legend() }}
+
+    <div class="sub on" id="sc-hit">{{ m.sc_table(sc_hitters, hitter_cols) }}</div>
+    <div class="sub" id="sc-pit">{{ m.sc_table(sc_pitchers, pitcher_cols) }}</div>
+  </section>
+
+  <!-- ================= AVAILABLE ================= -->
+  <section class="tab" id="available">
+    <div class="banner">Free agents in your league, best Statcast score first. Unscored players
+      (not enough batted balls to qualify) sort last.</div>
+    {{ m.sc_legend() }}
+    <table data-sortable>
+      <thead><tr>
+        <th class="sortable">Player</th><th class="sortable">Pos</th>
+        <th class="sortable" data-type="num">Statcast</th>
+        <th class="sortable num" data-type="num">Owned</th>
+        <th class="sortable num" data-type="num">Trend</th>
+      </tr></thead>
+      <tbody>
+      {% for a in available %}
+        <tr>
+          <td>{{ m.player_link(a) }}</td>
+          <td class="dim">{{ a.position }}</td>
+          <td data-sort="{{ a.score if a.score is not none else -1 }}">{{ m.pct(a.score) }}</td>
+          <td class="num dim">{{ m.own_pct(a.own) }}</td>
+          <td class="num" style="color: {{ '#4ade80' if a.delta > 0 else 'var(--dim)' }}">
+            {{ '+' if a.delta > 0 }}{{ a.delta }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ================= ROSTER ================= -->
+  <section class="tab" id="roster">
+    <div class="banner">Checked players are on the chopping block -- the only players this tool is ever
+      allowed to drop. <b>IL players can't pay for an add</b>: cutting one frees an IL slot, not the
+      team-space slot a new player needs, so they're skipped when a drop is chosen.</div>
+    <table>
+      <thead><tr><th>Chop</th><th>Player</th><th>Pos</th><th>Slot</th><th>Statcast</th></tr></thead>
+      <tbody>
+      {% for p in roster %}
+      <tr>
+        <td><input type="checkbox" class="chop" data-key="{{ p.player_key }}"
+                   data-name="{{ p.name }}" {% if p.marked %}checked{% endif %}></td>
+        <td>{{ m.player_link(p) }}</td>
+        <td class="dim">{{ p.position }}</td>
+        <td>{% if p.il %}<span class="il">{{ p.selected_position }}</span>
+            {% else %}<span class="dim">{{ p.selected_position }}</span>{% endif %}</td>
+        <td>{{ m.pct(p.score) }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+
+    {% if block_order %}
+    <h3>Cut order</h3>
+    <table id="order">
+      {% for e in block_order %}
+      <tr data-key="{{ e.player_key }}">
+        <td style="width:30px" class="dim">{{ loop.index }}</td>
+        <td class="name">{{ e.name }}
+          {% if e.il %}<span class="il">IL -- frees no team space</span>{% endif %}</td>
+        <td style="width:90px"><div class="ord">
+          <button class="up">↑</button><button class="down">↓</button>
+        </div></td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </section>
+
+  <section class="tab" id="report"><pre>{{ report }}</pre></section>
+</main>
+{% endif %}
+
+<script src="/static/app.js"></script>
+{% if running %}<script>watchPull();</script>{% endif %}
+</body>
+</html>
+

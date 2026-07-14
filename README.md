@@ -9,7 +9,7 @@ Run `python daily_pull.py` each morning to pull fresh data, then:
 - `python -m src.recommender` -- today's start/sit recommendations
 - `python -m src.pickup_analyzer` -- today's best available streamers (hitters and pitchers)
 
-Or just double-click `FantasyBaseball.bat` on the desktop to run everything.
+Or just double-click the **Fantasy Baseball** desktop shortcut, which opens the GUI and pulls fresh data on its own (see [Desktop App](#desktop-app-apppy)).
 
 ## Data Sources
 
@@ -148,6 +148,111 @@ python -m src.pickup_analyzer # Get today's streamers/pickups
 ```
 
 Or just run `python run_daily.py` / double-click `FantasyBaseball.bat` to do all three.
+
+## Desktop App (`app.py`)
+
+Double-click the **Fantasy Baseball** shortcut on the desktop (or run `run_gui.bat`).
+It starts a local server on `127.0.0.1:5000` -- bound to localhost, not the network --
+and opens your browser.
+
+- **Moves** -- every add the analyzer surfaced that maps to a real Yahoo free agent,
+  each paired with the player it would cost you. Approve files it with Yahoo.
+- **Rankings** -- PitcherList's weekly Top 100 SP and Top 150 hitters, with tier, weekly
+  movement, Statcast score, and whether the player is available in *your* league.
+- **Streamers** -- the SP streamer board by start date, plus PitcherList's top priority adds.
+- **Statcast** -- the full percentile leaderboard for hitters and pitchers, sortable on
+  every metric.
+- **Available** -- free agents in your league, best Statcast score first.
+- **Roster** -- tick players onto the chopping block and set the cut order.
+- **Report** -- the same text report `run_daily.py` has always written.
+
+Every table sorts by clicking a header, and every player name links to their **Statcast
+card** (`/player/<hitters|pitchers>/<savant_id>`) -- a percentile bar for each metric,
+grouped the way a scouting report reads. Tabs are deep-linkable: `/#statcast`.
+
+Only **Rankings**, **Statcast** and **Available** matter on a day with no games -- they're
+season-to-date, so they stay worth reading when start/sit has nothing to say.
+
+### Reading the percentile bars
+
+Every Statcast metric is oriented so **higher is always better** (a low chase rate shows as
+a high percentile), so a bar is never inverted. The scale is diverging around the league
+average: **blue = poor, gray = average, red = elite** -- the same orientation Savant uses.
+The number is always printed next to the bar, so the value never depends on color alone.
+Ramp steps live in `PCT_RAMP` in `app.py` and are validated to clear 3:1 contrast on the
+app's surface.
+
+### When data is pulled
+
+On launch the app pulls **only if today's data isn't already on disk** -- if you just ran
+a pull, it uses what's there rather than re-fetching. After that it refreshes **once an
+hour for as long as it stays open**, and **Refresh data** forces a pull at any time.
+
+Close the window and it stops pulling. There is no Windows scheduled task any more -- the
+old 9am `FantasyBaseballDaily` trigger has been removed. Interval lives in
+`REFRESH_INTERVAL` in `app.py`.
+
+### Only one server, ever
+
+Werkzeug sets `SO_REUSEADDR`, and **on Windows that lets a second process bind a port the
+first one is already listening on** -- so relaunching used to stack servers silently rather
+than failing with "port in use", and requests landed on whichever one Windows picked. That
+is how you end up looking at a page rendered by stale code.
+
+So the app asks the port who it is (`GET /health`) before starting:
+
+- Already running? It opens the browser at the existing instance and exits.
+- **Quit** in the header stops the server cleanly.
+- `stop_gui.bat` kills anything orphaned on port 5000 (window closed uncleanly, machine slept).
+
+Code changes need a restart -- the server runs with `debug=False`, so it does not reload.
+
+### Days with no games
+
+On the All-Star break and off-days FantasyPros publishes **no daily projections** -- the
+page returns a valid table with zero rows. That is a legitimately empty result, not a
+failure:
+
+- Projection files are **not** required for a day to count as complete.
+- The recommender and pickup analyzer fall back to their other signals (PitcherList tiers,
+  weekly rankings, Statcast, Yahoo ownership) instead of crashing.
+- The Moves tab says plainly that projections are unavailable, and why.
+
+Don't mistake this for an expired FantasyPros cookie. A stale cookie returns **10 rows**
+(the free-tier cap) and raises a loud error; no games returns **zero** rows.
+
+### IL and team space
+
+Yahoo keeps two separate pools, and `src/roster_space.py` models the difference:
+
+- **Team space** -- active slots + bench (23 in this league). An add needs an open slot here.
+- **IL slots** -- 4 here, sitting *outside* team space.
+
+The consequence that drives the UI: **dropping an IL player frees an IL slot, not the slot
+an add needs.** So an IL player is never offered as the cost of an add -- if the top of your
+chopping block is on the IL, it's skipped for the first healthy player below them. And when
+team space has an open spot, an add is proposed with **no drop at all**.
+
+### The chopping block
+
+`chopping_block.json` is the list of players you have pre-authorized to be dropped, in cut
+order. It is the safety rail on every transaction: a drop is *only* ever proposed for
+someone on this list. If a drop is needed and nobody on the list can supply one, no add can
+be approved -- the buttons stay disabled. A bad scrape or a botched name match can therefore
+surface a wrong *add*, but it can never cost you a player you didn't personally condemn.
+
+Every executed transaction is appended to `transactions.log`.
+
+### Write access
+
+Transactions need a Read/**Write** Yahoo token; the read-only one you started with will be
+rejected. Yahoo grants this at the app level, so refreshing the token is not enough:
+
+1. https://developer.yahoo.com/apps/ -> your app -> API Permissions -> Fantasy Sports -> **Read/Write**
+2. `python reauth.py` (backs up the old token, runs the browser consent flow)
+
+Adds route themselves: a player on waivers is filed as a waiver claim (pending until it
+clears overnight), anyone else as an instant free-agent add.
 
 ## Data Output Structure
 

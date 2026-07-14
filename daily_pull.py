@@ -95,6 +95,10 @@ def pull_daily_data():
     fp_hitters, fp_pitchers = scrape_daily_projections()
     fp_hitters.to_csv(os.path.join(fpros_dir, 'hitters.csv'), index=False)
     fp_pitchers.to_csv(os.path.join(fpros_dir, 'pitchers.csv'), index=False)
+    if fp_hitters.empty and fp_pitchers.empty:
+        # Valid on a day with no games -- don't let it read as a successful fetch.
+        print("  NOTE: FantasyPros published no daily projections for today.")
+        print("        Expected on off-days and the All-Star break. Everything else still pulled.")
 
     # 8. Baseball Savant Statcast percentile rankings (underlying skill)
     print("\n[8/9] Fetching Baseball Savant Statcast percentiles...")

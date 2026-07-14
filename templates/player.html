@@ -1,0 +1,54 @@
+{% import '_macros.html' as m %}
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{ p.name }} -- Statcast</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>⚾ {{ p.name }}</h1>
+  <span class="dim">{{ p.team }} · {{ 'Hitter' if p.kind == 'hitters' else 'Pitcher' }}</span>
+  <span class="spacer"></span>
+  <button onclick="history.back()">← Back</button>
+</header>
+
+<main>
+  <div class="card">
+    <div class="hero">
+      {% if p.score is not none %}
+        <span class="figure" style="color: {{ p.score | pct_color }}">{{ p.score }}</span>
+        <span class="dim">composite Statcast score (0-100)</span>
+      {% else %}
+        <span class="figure dim">--</span>
+        <span class="dim">not enough batted balls to qualify</span>
+      {% endif %}
+      <span class="spacer"></span>
+      {{ m.status_pill(p.status) }}
+    </div>
+
+    <div class="legend">
+      {% if p.rank %}<span>PitcherList <b>#{{ p.rank }}</b></span>{% endif %}
+      {% if p.own is not none %}<span>Owned in <b>{{ p.own }}%</b> of leagues</span>{% endif %}
+      <span>Every bar is a <b>percentile</b> -- higher is better, 50 is league average.</span>
+    </div>
+
+    {% for g in p.groups %}
+      <h3>{{ g.title }}</h3>
+      {% for metric in g.metrics %}
+        <div class="metric-row">
+          <span class="label">{{ metric.label }}</span>
+          {{ m.pct(metric.value, strong=true) }}
+        </div>
+      {% endfor %}
+    {% endfor %}
+  </div>
+
+  <p class="dim" style="margin-top:14px">
+    Percentiles from Baseball Savant, {{ data_dir }}. The scraper orients every metric so
+    higher is always better -- a low chase rate shows as a high percentile.
+  </p>
+</main>
+</body>
+</html>

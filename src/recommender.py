@@ -10,6 +10,16 @@ import json
 from datetime import date
 
 
+def _safe_read(path):
+    """Read a CSV that is allowed to be missing or empty (no games -> no projections)."""
+    if os.path.exists(path):
+        try:
+            return pd.read_csv(path)
+        except pd.errors.EmptyDataError:
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+
 def _normalize_name(name):
     """Normalize player names for fuzzy matching."""
     import unicodedata
@@ -26,7 +36,12 @@ def _normalize_name(name):
 
 
 def _match_projection(player_name, proj_df):
-    """Find a player's daily projection by name matching."""
+    """Find a player's daily projection by name matching, or None if there are none."""
+    # On a day with no games there are no daily projections at all, so the frame comes
+    # back empty and has no 'Name' column to match against.
+    if proj_df is None or proj_df.empty or 'Name' not in proj_df.columns:
+        return None
+
     norm_name = _normalize_name(player_name)
     proj_df = proj_df.copy()
     proj_df['_norm'] = proj_df['Name'].apply(_normalize_name)
@@ -174,9 +189,11 @@ def generate_recommendations(data_dir=None):
 
     # Load data
     roster = pd.read_csv(os.path.join(data_dir, 'yahoo', 'roster.csv'))
-    daily_hitters = pd.read_csv(os.path.join(data_dir, 'projections_fpros', 'hitters.csv'))
-    daily_pitchers = pd.read_csv(os.path.join(data_dir, 'projections_fpros', 'pitchers.csv'))
-    games = pd.read_csv(os.path.join(data_dir, 'mlb', 'games.csv'))
+    # No games (All-Star break) means no daily projections. That's a valid empty set,
+    # not a broken file -- read it tolerantly so an off-day doesn't kill the report.
+    daily_hitters = _safe_read(os.path.join(data_dir, 'projections_fpros', 'hitters.csv'))
+    daily_pitchers = _safe_read(os.path.join(data_dir, 'projections_fpros', 'pitchers.csv'))
+    games = _safe_read(os.path.join(data_dir, 'mlb', 'games.csv'))
     # PitcherList tiers are the primary pitcher signal; FantasyPros is a cross-check.
     streamer_tiers = _load_streamer_tiers(data_dir, game_date)
     sv_hitter_scores = _load_savant_scores(data_dir, 'hitters')
